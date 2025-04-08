@@ -1,5 +1,51 @@
 # Project: Whispering World (Arbeitstitel)
 
+## 🚀 Schnellstart / How to Run
+
+Dieses Projekt verwendet Python und ein lokales Large Language Model (LLM) über Ollama.
+
+**Voraussetzungen:**
+
+* **Python:** Python 3.8 oder neuer installiert ([python.org](https://www.python.org/)).
+* **Ollama:** Ollama muss auf deinem System installiert sein und laufen ([ollama.com](https://ollama.com/)).
+
+**Setup & Start:**
+
+1.  **Code herunterladen/klonen:**
+    ```bash
+    # Wenn du Git benutzt:
+    git clone <URL-deines-Git-Repositorys>
+    cd whispering-world
+    # Ansonsten: Lade den Code als ZIP herunter und entpacke ihn.
+    # Wechsle dann im Terminal in das entpackte Verzeichnis.
+    ```
+
+2.  **Abhängigkeiten installieren:**
+    Es wird empfohlen, eine virtuelle Umgebung zu verwenden.
+    ```bash
+    # Erstelle eine virtuelle Umgebung (optional, aber empfohlen)
+    python -m venv .venv
+    # Aktiviere sie (Windows: .venv\Scripts\activate | Mac/Linux: source .venv/bin/activate)
+
+    # Installiere die benötigten Python-Pakete
+    pip install -r requirements.txt
+    ```
+    *(Stelle sicher, dass die `requirements.txt`-Datei `requests` und `python-dotenv` enthält, basierend auf unserem letzten Code.)*
+
+3.  **Ollama starten:**
+    **WICHTIG:** Stelle sicher, dass die Ollama-Anwendung oder der Ollama-Dienst auf deinem Computer im Hintergrund läuft, *bevor* du das Spiel startest!
+
+4.  **Spiel starten:**
+    Führe das Hauptskript im Terminal aus dem Projektverzeichnis heraus aus:
+    ```bash
+    python main.py
+    ```
+
+5.  **Erster Start / Modell-Download:**
+    Wenn du das Spiel zum ersten Mal startest und das benötigte LLM (standardmäßig `llama3:8b-instruct`) noch nicht über Ollama heruntergeladen hast, wird das Skript dies erkennen. Es fragt dich dann, ob es das Modell jetzt herunterladen soll. Bestätige mit 'j' (oder 'y'). Der Download kann je nach Modellgröße und Internetverbindung einige Zeit dauern.
+
+---
+
 ## 📜 Konzept
 
 **Whispering Worlds** ist ein experimentelles Textadventure, das klassische Erkundung und Rätsellösung mit dynamischer Interaktion durch KI-gesteuerte Charaktere (Agenten) verbindet. Spieler navigieren durch eine Welt bestehend aus miteinander verbundenen Orten ("Räumen"), interagieren mit Objekten und verfolgen ein übergeordnetes Ziel.
@@ -11,7 +57,7 @@ Das Besondere an diesem Projekt ist der Einsatz von Sprachmodellen (LLMs), um NS
 * **Natürliche Sprachverarbeitung:** Spieler können über Texteingaben in natürlicher Sprache mit ihnen kommunizieren, über vordefinierte Befehle hinaus.
 * **Dynamisches Verhalten:** Ihre Reaktionen und ihre Hilfsbereitschaft (oder Feindseligkeit) entwickeln sich basierend auf dem Verhalten des Spielers.
 
-Das Spiel beinhaltet Roguelike-Elemente, die Wiederspielbarkeit fördern und bei bestimmten Ereignissen oder Entscheidungen zu einem Neustart des Spielzyklus führen können. Ein einzelner Durchlauf ist auf eine Spielzeit von ca. 10-30 Minuten ausgelegt.
+Das Spiel beinhaltet Rogelike-Elemente, die Wiederspielbarkeit fördern und bei bestimmten Ereignissen oder Entscheidungen zu einem Neustart des Spielzyklus führen können. Ein einzelner Durchlauf ist auf eine Spielzeit von ca. 10-30 Minuten ausgelegt.
 
 **Zielgruppe:** Spieler von Textadventures, Fans von interaktiver Fiktion und Personen, die an der Anwendung von KI in Spielen interessiert sind.
 
@@ -19,74 +65,64 @@ Das Spiel beinhaltet Roguelike-Elemente, die Wiederspielbarkeit fördern und bei
 
 Das Spiel wird modular aufgebaut sein, um Erweiterbarkeit und Wartbarkeit zu gewährleisten.
 
-1.  **Game Engine Core (Python):**
-    * Verwaltet den Spielzustand (Position des Spielers, Inventar, Zustand der Welt/Räume, Flags für Ereignisse).
+1.  **Game Engine Core (Python - `main.py`):**
+    * Verwaltet den Spielzustand (Position des Spielers, Inventar, Welt-Flags).
     * Implementiert die grundlegende Spiel-Loop (Input -> Processing -> Output).
-    * Definiert die Struktur der Welt (Räume, Verbindungen, Objekte).
-    * Speichert und lädt Spielstände (insbesondere für Agenten-Gedächtnis relevant).
+    * Orchestriert Aufrufe an Aktions- und Agenten-Module.
 
-2.  **Input Parser:**
-    * Unterscheidet zwischen Standard-Textadventure-Befehlen (z.B. `gehe nach norden`, `nimm schlüssel`, `untersuche tisch`) und natürlicher Sprache für die Interaktion mit Agenten.
-    * Leitet Standardbefehle an die Game Engine weiter.
-    * Leitet natürliche Spracheingaben an das entsprechende Agenten-Modul weiter.
+2.  **Action Logic (Python - `actions.py`):**
+    * Enthält Funktionen für Standard-Spieleraktionen (`gehe`, `nimm`, `untersuche`, `benutze`, `inventar`, `schaue`).
+    * Modifiziert den Spielzustand basierend auf den Aktionen und gibt Feedback-Nachrichten zurück.
 
-3.  **World Representation:**
-    * Definition von Räumen, Objekten und deren Eigenschaften (beschreibbar, nehmbar, benutzbar etc.).
-    * Wahrscheinlich über Konfigurationsdateien (z.B. JSON oder YAML) oder direkt in Python-Datenstrukturen.
+3.  **World Representation (Python - `game_data.py`):**
+    * Definition von Räumen (mit Exits, Start-Items, Features).
+    * Definition von Items (mit Eigenschaften wie `takeable`, `consumable` und detaillierten `use_on_target` / `use_alone_effect` Regeln).
+    * Definition von Raum-Features (Türen, Truhen etc.) mit Zuständen.
+    * Definition der Agenten-Basis-Prompts und Persönlichkeiten.
+    * Initialer Weltzustand (`world_flags`).
 
-4.  **Agenten-Modul (KI-Integration):**
-    * **Herzstück des Projekts.** Für jeden KI-Agenten wird eine Instanz verwaltet.
-    * **Prompt Engineering:** Jeder Agent erhält einen Basis-Prompt, der seine Persönlichkeit, seine geheime Agenda, sein Wissen und den aktuellen Spielkontext definiert.
-    * **Gedächtnis-Management:**
-        * (+) **Nutzung von LangMem (oder vergleichbarer Memory-Bibliothek):** Um das Problem begrenzter LLM-Kontextfenster zu umgehen und ein persistentes Gedächtnis für die Agenten zu ermöglichen.
-        * (+) LangMem soll vergangene Interaktionen mit dem Spieler speichern.
-        * (+) Relevante Informationen aus der gespeicherten Historie werden bei neuen Interaktionen abgerufen (z.B. durch semantische Suche oder Zusammenfassung) und dem Agenten als Teil des Kontexts zur Verfügung gestellt.
-        * Dies ermöglicht es Agenten, sich an Details aus früheren Gesprächen zu "erinnern" und ihr Verhalten entsprechend anzupassen.
-    * **LLM-Anbindung:** Schnittstelle zu einem oder mehreren Sprachmodellen (lokal oder API-basiert). Hier wird die natürliche Spracheingabe des Spielers zusammen mit dem Kontext-Prompt (inkl. abgerufener Gedächtnisinhalte) verarbeitet, um die Antwort des Agenten zu generieren.
-    * **(Optional) Fine-Tuning:** Exploration von Fine-Tuning-Techniken, um das Verhalten der Agenten spezifischer zu gestalten.
-
+4.  **Agenten-Modul (Python - `agent.py` / KI-Integration):**
+    * **Herzstück des Projekts.** Die `Agent`-Klasse verwaltet einzelne KI-NSCs.
+    * **Prompt Engineering:** Nutzt den Basis-Prompt aus `game_data.py`.
+    * **Gedächtnis-Management:** Implementiert eine (aktuell einfache) Konversationshistorie für den Prompt-Kontext. (LangMem/Alternativen als zukünftige Erweiterung).
+    * **LLM-Anbindung:** Kommuniziert mit dem **lokalen Ollama-Server**, um Antworten basierend auf Prompt, Gedächtnis und Spieler-Input zu generieren.
 
 5.  **State Management:**
-    * Speicherung des relevanten Spielzustands, insbesondere des Agenten-Gedächtnisses über Spielneustarts hinweg (je nach Designentscheidung für den Reset-Mechanismus).
+    * Der Spielzustand (`player`, `world_flags`) wird aktuell im Speicher gehalten und geht beim Beenden verloren. (Persistenz wäre eine Erweiterung).
 
-6.  **(Optional) Deployment-Schnittstelle (z.B. Discord Bot):**
-    * Ein Wrapper, der die Game Engine startet und die Ein-/Ausgabe über eine Plattform wie Discord ermöglicht (z.B. mittels `discord.py` oder `hikari`).
+## 🚀 Technologie-Stack (Aktuell)
 
-## 🚀 Technologie-Stack (Vorschlag)
-
-* **Programmiersprache:** Python (starke Bibliotheken für Textverarbeitung, KI und ggf. Discord-Bots)
-* **LLM-Integration:**
-    * Bibliotheken wie `transformers` (Hugging Face), `LangChain` oder `LlamaIndex`.
-    * Potenzielle Nutzung von lokalen Modellen (via Ollama, llama.cpp etc.) und/oder APIs (OpenAI, Anthropic, Google Gemini etc.).
-* (+) **Agenten-Gedächtnis:** LangMem (oder alternative Memory-Lösungen innerhalb von LangChain/LlamaIndex)
-* **Datenformate:** JSON oder YAML für Welt-/Objektdefinitionen.
-* **Discord Bot (Optional):** `discord.py` oder `hikari`.
+* **Programmiersprache:** Python 3
+* **LLM-Integration:** Lokales LLM via **Ollama**
+* **Python-Bibliotheken:** `requests` (für Ollama API), `python-dotenv` (optional für Konfiguration)
+* **Datenstrukturen:** Python Dictionaries und Listen in `game_data.py`
 
 ## 🎯 Ziele & Motivation
 
-* Entwicklung eines spielbaren Prototyps mit mindestens 1-2 KI-Agenten.
+* Entwicklung eines spielbaren Prototyps mit mindestens 1-2 KI-Agenten via lokalem LLM.
 * Erforschung der Möglichkeiten und Herausforderungen bei der Integration von LLMs in interaktive Fiktion.
 * Schaffung eines unterhaltsamen Spielerlebnisses für Freunde und Interessierte.
 * Aufbau eines flexiblen Frameworks, das potenziell für weitere Mini-Adventures wiederverwendet werden kann.
-* Experimentieren mit Deployment-Optionen (insbesondere Discord).
 
 ## 💡 Herausforderungen
 
-* Effektives Prompt-Design für glaubwürdige und konsistente Agenten-Persönlichkeiten und -Gedächtnisse.
+* Effektives Prompt-Design für glaubwürdige und konsistente Agenten-Persönlichkeiten mit lokalen Modellen.
 * Balancing der Agenten (Hilfsbereitschaft vs. Behinderung des Spielers).
-* (+) **Technische Umsetzung und Integration des Agenten-Gedächtnisses mit LangMem.**
-* Performance und Kosten bei der Nutzung von LLMs (insbesondere bei lokalen Modellen oder API-Calls).
-* (+) **Effiziente Abfrage und Zusammenfassung der Gedächtnisinhalte durch LangMem.**
+* **Performance lokaler LLMs:** Antwortzeiten können je nach Hardware variieren.
+* **Ressourcenbedarf:** Lokale LLMs benötigen ausreichend RAM.
+* **Gedächtnis-Implementierung:** Aktuell sehr einfach, Verbesserungspotenzial (z.B. LangMem).
 * Gestaltung einer interessanten Spielwelt und sinnvoller Rätsel/Aufgaben.
-* Integration und potenzielles Fine-Tuning von LLMs.
 
 ## ✨ Zukünftige Erweiterungsideen
 
-* Implementierung von Charakter-Stats (z.B. Überzeugungskraft, Schleichen), die Interaktionsmöglichkeiten beeinflussen.
-* Hinzufügen weiterer KI-Agenten mit komplexeren Beziehungen untereinander.
-* Ausbau der Story und der Spielwelt.
-* Dynamischere Welt, die sich auch ohne Spielerinteraktion verändert.
-* (Optional) Einfache grafische Repräsentation der aktuellen Szene oder Karte.
+* **Persistenz:** Speichern und Laden des Spielstands.
+* **Besseres Gedächtnis:** Integration von LangMem o.ä. für echtes Langzeitgedächtnis der Agenten.
+* **Fine-Tuning:** Untersuchung von Fine-Tuning lokaler Modelle für spezifisches Agentenverhalten.
+* Implementierung von Charakter-Stats.
+* Hinzufügen weiterer KI-Agenten, Items, Räume und Rätsel.
+* Ausbau der Story und der Welt.
+* (Optional) Discord Bot-Integration.
+* (Optional) Einfache grafische Repräsentation.
 
 ## 🤝 Beitragende
 
