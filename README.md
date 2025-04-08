@@ -1,8 +1,8 @@
-# Project: Whispering Towers (Arbeitstitel)
+# Project: Whispering World (Arbeitstitel)
 
 ## 📜 Konzept
 
-**Whispering Towers** ist ein experimentelles Textadventure, das klassische Erkundung und Rätsellösung mit dynamischer Interaktion durch KI-gesteuerte Charaktere (Agenten) verbindet. Spieler navigieren durch eine Welt bestehend aus miteinander verbundenen Orten ("Räumen"), interagieren mit Objekten und verfolgen ein übergeordnetes Ziel.
+**Whispering Worlds** ist ein experimentelles Textadventure, das klassische Erkundung und Rätsellösung mit dynamischer Interaktion durch KI-gesteuerte Charaktere (Agenten) verbindet. Spieler navigieren durch eine Welt bestehend aus miteinander verbundenen Orten ("Räumen"), interagieren mit Objekten und verfolgen ein übergeordnetes Ziel.
 
 Das Besondere an diesem Projekt ist der Einsatz von Sprachmodellen (LLMs), um NSCs (Nicht-Spieler-Charaktere) zum Leben zu erwecken. Diese Agenten besitzen:
 
