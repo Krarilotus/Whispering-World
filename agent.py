@@ -51,15 +51,15 @@ class GameAgent:
 
     def get_current_game_state_context(self) -> str:
          """Generates a context string based on the agent's current game state."""
-         # Example: Customize based on what the AI should know
          context = f"Agent Name: {self.name}\n"
-         context += f"Relationship with Player: {self.relationship_level} (Scale: -10 to +10)\n"
+         context += f"Your Location: Corridor outside Cell 17\n" # Warden's location
+         context += f"Relationship with Prisoner (Cell 17): {self.relationship_level} (Scale: -10 to +10)\n"
          if self.knowledge_summary:
               context += f"Summary of Past Interactions:\n{self.knowledge_summary}\n"
-         # Add other relevant game state (mood, location, immediate goal, etc.)
-         context += f"Current Goal: Guard the cellar key, prevent player escape.\n"
-         context += f"Personal Weakness: Easily bored, susceptible to flattery or interesting stories.\n"
-
+         # Add other relevant game state if needed (e.g., time of day, recent events)
+         context += f"Current Task: Patrolling, observing new prisoner in Cell 17.\n"
+         # Mentioning flaws here might be redundant if they are well-defined in system prompt
+         # context += f"Reminder of Flaws: Skeptical, prone to acting on instinct, emotionally scarred.\n"
          return context
 
     def set_thread_id(self, thread_id: str):

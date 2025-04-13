@@ -8,7 +8,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union # Upd
 # Use pip install openai python-dotenv
 # Assumes Python 3.10+ for | syntax
 from openai import AsyncOpenAI, AssistantEventHandler, RateLimitError, NotFoundError, APIError
-from openai.types.beta.threads import Run, ThreadMessage
+from openai.types.beta.threads import Run, Message
 from openai.types.beta.threads.runs import RunStep
 from dotenv import load_dotenv
 
@@ -115,18 +115,18 @@ class StreamingEventHandler(AssistantEventHandler):
         # For function calls, the result submission happens *after* the run stream.
 
 
-    async def on_message_created(self, message: ThreadMessage) -> None:
+    async def on_message_created(self, message: Message) -> None:
         """Called when a new message (usually assistant) is created."""
         logger.debug(f"Event: message_created - ID: {message.id}, Role: {message.role}")
         await self._put_event("message_start", role=message.role, message_id=message.id)
 
-    async def on_message_delta(self, delta, snapshot: ThreadMessage) -> None:
+    async def on_message_delta(self, delta, snapshot: Message) -> None:
         """Called when parts of the message content change (e.g., text delta)."""
         # Often overlaps with on_text_delta, but gives message context.
         # logger.debug(f"Event: message_delta - ID: {delta.id}") # Can be verbose
         pass # Often redundant if handling text_delta
 
-    async def on_message_done(self, message: ThreadMessage) -> None:
+    async def on_message_done(self, message: Message) -> None:
         """Called when a message is fully processed."""
         logger.debug(f"Event: message_done - ID: {message.id}, Status: {message.status}")
         # You might get the full content here if needed:
@@ -375,6 +375,77 @@ class AgentManager:
             logger.error(f"Unexpected error adding message to thread {thread_id}: {e}", exc_info=True)
         return None
 
+    async def run_agent_on_thread_non_streaming(
+        self,
+        assistant_id: str,
+        thread_id: str,
+        additional_instructions: Optional[str] = None,
+        temperature: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Runs the agent on the thread NON-STREAMINGLY and polls for completion.
+
+        Returns the final Run object details or None on error.
+
+        Args:
+            assistant_id: The ID of the Assistant (Agent) to run.
+            thread_id: The ID of the thread.
+            additional_instructions: Specific instructions for this run.
+            temperature: Override the assistant's default temperature for this run.
+            metadata: Optional metadata for this specific run.
+
+        Returns:
+            A dictionary representing the final Run object if successful, otherwise None.
+        """
+        logger.info(f"Requesting NON-STREAMING run for agent {assistant_id} on thread {thread_id}...")
+        run = None
+        try:
+            # Create the run (non-streaming)
+            run = await self.client.beta.threads.runs.create(
+                thread_id=thread_id,
+                assistant_id=assistant_id,
+                additional_instructions=additional_instructions, # Pass instructions if provided
+                temperature=temperature,
+                metadata=metadata or {},
+                # No stream=True, no event_handler
+            )
+            logger.info(f"Non-streaming run {run.id} created with status: {run.status}")
+
+            # Simple polling loop to wait for completion
+            while run.status in ["queued", "in_progress", "cancelling"]:
+                await asyncio.sleep(1.5) # Check every 1.5 seconds (adjust as needed)
+                run = await self.client.beta.threads.runs.retrieve(
+                    thread_id=thread_id, run_id=run.id
+                )
+                logger.debug(f"Polling run {run.id}, status: {run.status}")
+
+            # --- Handle final run status ---
+            if run.status == "completed":
+                logger.info(f"Non-streaming run {run.id} completed successfully.")
+                return run.model_dump() # Return the completed run object details
+            elif run.status == "requires_action":
+                # NOTE: This basic non-streaming function does NOT handle tool calls.
+                # In a real app, you'd extract tool calls from run.required_action,
+                # execute them, and submit outputs using runs.submit_tool_outputs.
+                logger.warning(f"Non-streaming run {run.id} requires action (Tool Call). This function doesn't handle tool calls.")
+                return run.model_dump() # Return the run object so caller sees status
+            else:
+                # Includes 'failed', 'cancelled', 'expired'
+                final_status = run.status
+                last_error = run.last_error
+                logger.error(f"Non-streaming run {run.id} finished with terminal status: {final_status}. Last Error: {last_error}")
+                return run.model_dump() # Return the run object with error details
+
+        except APIError as e:
+            logger.error(f"API Error during non-streaming run: Status={e.status_code}, Body={e.body}", exc_info=True)
+            if run: return run.model_dump() # Return partial run info if available
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error during non-streaming run: {type(e).__name__}", exc_info=True)
+            if run: return run.model_dump() # Return partial run info if available
+            return None
+
     async def run_agent_on_thread_stream(
         self,
         assistant_id: str,
@@ -428,59 +499,99 @@ class AgentManager:
         # Use a separate task to start the stream and immediately capture the run_id
         # This addresses potential race conditions where the run finishes extremely fast.
         async def _start_stream_and_get_run_id():
+            run_initiated = False # Flag to track if run object was obtained
+            run_id_capture[0] = None # Ensure it's None initially
+            stream_context_manager = None # To hold the stream context manager object
+
             try:
-                async with self.client.beta.threads.runs.stream(
-                    thread_id=thread_id,
-                    assistant_id=assistant_id,
-                    # instructions=instructions, # Deprecated
-                    additional_instructions=effective_instructions,
-                    event_handler=handler,
-                    temperature=temperature, # Pass temperature if provided
-                    metadata=metadata or {},
-                ) as stream:
-                    # The stream context manager now handles waiting for the run internally.
-                    # We need the run object *before* `until_done` to get the ID reliably.
-                    run = await stream.current_run()
-                    if run and run.id:
-                        run_id_capture[0] = run.id
-                        logger.info(f"Run {run.id} initiated for thread {thread_id}.")
-                        # Signal the run_start event manually since we might get the ID before the handler does
-                        await handler._put_event("run_start", run_id=run.id, step_id=None) # Step ID comes later
-                    else:
-                         logger.error("Failed to get current run details immediately after stream start.")
-                         await handler._put_event("error", "Failed to obtain initial run ID")
-                         await handler._put_event(None) # Signal end due to error
-                         return # Exit if we can't get the run ID
+                logger.debug("Attempting to create client.beta.threads.runs.stream context manager...")
+                try:
+                    # *** Create the context manager object first ***
+                    stream_context_manager = self.client.beta.threads.runs.stream(
+                        thread_id=thread_id,
+                        assistant_id=assistant_id,
+                        # additional_instructions=effective_instructions, # Keep commented out for test
+                        event_handler=handler,
+                        temperature=temperature,
+                        metadata=metadata or {},
+                    )
+                    logger.debug("Stream context manager object created. Attempting to enter context...")
 
-                    # Now, let the stream run to completion in the background task
-                    logger.debug(f"Streaming run {run_id_capture[0]}...")
-                    await stream.until_done()
-                    logger.debug(f"Stream for run {run_id_capture[0]} ended.")
-                    # Final run details can be retrieved if needed, but on_final_run/on_end handle status.
-                    # final_run_details = await stream.get_final_run()
-                    # logger.info(f"Stream run {final_run_details.id} completed with status: {final_run_details.status}")
+                    # *** Now enter the context ***
+                    async with stream_context_manager as stream:
+                        logger.debug("Entered stream context successfully.")
+                        try:
+                            # *** Wrap the current_run() call ***
+                            logger.debug("Attempting to get current run details via stream.current_run()...")
+                            run = await stream.current_run()
+                            # Log details if run object is received
+                            if run:
+                                logger.debug(f"stream.current_run() returned Run ID: {run.id}, Status: {run.status}")
+                            else:
+                                logger.warning("stream.current_run() returned None")
 
-            except RateLimitError as e:
-                logger.error(f"Rate limit error during streaming run: {e}", exc_info=False)
-                await handler._put_event("error", f"Rate Limit Error: {e}")
-                await handler._put_event(None)
-            except NotFoundError as e:
-                 logger.error(f"Not Found error during streaming run (check thread/assistant ID?): {e}", exc_info=True)
-                 await handler._put_event("error", f"Not Found Error: {e}")
-                 await handler._put_event(None)
-            except APIError as e:
-                logger.error(f"API Error during streaming run: {e}", exc_info=True)
-                await handler._put_event("error", f"API Error: {e}")
-                await handler._put_event(None)
-            except Exception as e:
-                logger.error(f"Unexpected error during streaming run: {e}", exc_info=True)
-                await handler._put_event("error", f"Unexpected Error: {e}")
-                # Ensure None sentinel is placed even if on_end isn't reached
-                # Check if sentinel already added by other handlers
-                if handler._queue.empty() or handler._queue._queue[-1] is not None:
-                     await handler._put_event(None)
-            # finally:
-                 # The handler's on_end, on_exception, or on_timeout should place the None sentinel.
+                            if run and run.id:
+                                run_id_capture[0] = run.id
+                                run_initiated = True
+                                logger.info(f"Run {run.id} initiated for thread {thread_id}.")
+                                # Manually put run_start event as we have the ID now
+                                await handler._put_event("run_start", run_id=run.id, step_id=None)
+                            else:
+                                # This case means context was entered, but current_run() failed
+                                logger.error("Stream context entered, but failed to get valid run details from stream.current_run().")
+                                await handler._put_event("error", "Failed to obtain valid run details after stream start")
+                                await handler._put_event(None)
+                                return # Exit this async function
+
+                        # --- Exception handling for stream.current_run() ---
+                        except APIError as e_run:
+                            logger.error(f"Caught APIError during stream.current_run(): Status={e_run.status_code}, Body={e_run.body}", exc_info=True)
+                            await handler._put_event("error", f"API Error getting run details: {e_run}")
+                            await handler._put_event(None)
+                            return # Exit this async function
+                        except Exception as e_run:
+                            logger.error(f"Caught unexpected Exception during stream.current_run(): {type(e_run).__name__}", exc_info=True)
+                            await handler._put_event("error", f"Unexpected Error getting run details: {e_run}")
+                            await handler._put_event(None)
+                            return # Exit this async function
+
+                        # --- Proceed only if run was successfully initiated ---
+                        if run_initiated:
+                            logger.debug(f"Streaming run {run_id_capture[0]}...")
+                            try:
+                                await stream.until_done()
+                                logger.debug(f"Stream for run {run_id_capture[0]} ended naturally via until_done().")
+                            except APIError as e_stream:
+                                logger.error(f"Caught APIError during stream.until_done(): Status={e_stream.status_code}, Body={e_stream.body}", exc_info=True)
+                                # Handler's on_exception should catch this, but log here too
+                            except Exception as e_stream:
+                                logger.error(f"Caught unexpected Exception during stream.until_done(): {type(e_stream).__name__}", exc_info=True)
+                                # Handler's on_exception should catch this
+
+                # --- Exception handling for entering the stream context ---
+                except APIError as e_ctx:
+                    logger.error(f"Caught APIError entering stream context: Status={e_ctx.status_code}, Body={e_ctx.body}", exc_info=True)
+                    await handler._put_event("error", f"API Error entering stream context: {e_ctx}")
+                    await handler._put_event(None)
+                except Exception as e_ctx:
+                    logger.error(f"Caught unexpected Exception entering stream context: {type(e_ctx).__name__}", exc_info=True)
+                    await handler._put_event("error", f"Unexpected Error entering stream context: {e_ctx}")
+                    await handler._put_event(None)
+
+            # --- Catch-all for the whole function ---
+            except Exception as e_outer:
+                logger.error(f"Caught unexpected Exception in outer scope of _start_stream_and_get_run_id: {type(e_outer).__name__}", exc_info=True)
+                # Ensure sentinel is put if not already done by inner handlers
+                if handler._queue.empty() or (not handler._queue._queue[-1] is None):
+                    await handler._put_event("error", f"Outer scope error: {e_outer}")
+                    await handler._put_event(None)
+            finally:
+                # Log final status
+                logger.debug(f"_start_stream_and_get_run_id finished. Run initiated flag: {run_initiated}, Captured Run ID: {run_id_capture[0]}")
+                # Final check to ensure sentinel if run failed and nothing else was put
+                if not run_initiated and handler._queue.empty():
+                    logger.warning("Run was not initiated and queue is empty in finally block, ensuring None sentinel.")
+                    await handler._put_event(None)
 
         # Start the streaming task
         streaming_task = asyncio.create_task(_start_stream_and_get_run_id(), name=f"StreamTask_{thread_id[:8]}")
