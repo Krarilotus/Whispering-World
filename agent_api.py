@@ -382,69 +382,52 @@ class AgentManager:
         additional_instructions: Optional[str] = None,
         temperature: Optional[float] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        timeout_seconds: int = 60 # Added timeout parameter (e.g., 60 seconds)
     ) -> Optional[Dict[str, Any]]:
         """
-        Runs the agent on the thread NON-STREAMINGLY and polls for completion.
-
-        Returns the final Run object details or None on error.
-
-        Args:
-            assistant_id: The ID of the Assistant (Agent) to run.
-            thread_id: The ID of the thread.
-            additional_instructions: Specific instructions for this run.
-            temperature: Override the assistant's default temperature for this run.
-            metadata: Optional metadata for this specific run.
-
-        Returns:
-            A dictionary representing the final Run object if successful, otherwise None.
+        Runs the agent on the thread NON-STREAMINGLY and polls for completion with a timeout.
+        Returns the final Run object details or None on error. Adds a 'timed_out' status if polling exceeds timeout_seconds.
         """
         logger.info(f"Requesting NON-STREAMING run for agent {assistant_id} on thread {thread_id}...")
         run = None
+        start_time = asyncio.get_event_loop().time()
         try:
-            # Create the run (non-streaming)
             run = await self.client.beta.threads.runs.create(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
-                additional_instructions=additional_instructions, # Pass instructions if provided
-                temperature=temperature,
+                thread_id=thread_id, assistant_id=assistant_id,
+                additional_instructions=additional_instructions, temperature=temperature,
                 metadata=metadata or {},
-                # No stream=True, no event_handler
             )
             logger.info(f"Non-streaming run {run.id} created with status: {run.status}")
 
-            # Simple polling loop to wait for completion
             while run.status in ["queued", "in_progress", "cancelling"]:
-                await asyncio.sleep(1.5) # Check every 1.5 seconds (adjust as needed)
-                run = await self.client.beta.threads.runs.retrieve(
-                    thread_id=thread_id, run_id=run.id
-                )
+                # --- Timeout Check ---
+                if asyncio.get_event_loop().time() - start_time > timeout_seconds:
+                    logger.error(f"Run {run.id} polling timed out after {timeout_seconds} seconds.")
+                    # Attempt to cancel the run on timeout (best effort)
+                    try:
+                        logger.warning(f"Attempting to cancel timed-out run {run.id}...")
+                        # Use non-blocking cancel request, don't wait for it here
+                        asyncio.create_task(self.client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id))
+                    except Exception as cancel_err:
+                        logger.error(f"Failed to initiate cancellation for timed-out run {run.id}: {cancel_err}")
+                    # Return a synthetic run object indicating timeout
+                    return {"id": run.id, "status": "timed_out", "last_error": {"code": "polling_timeout", "message": f"Polling exceeded {timeout_seconds}s"}}
+                # --- End Timeout Check ---
+
+                await asyncio.sleep(1.5) # Poll interval
+                run = await self.client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
                 logger.debug(f"Polling run {run.id}, status: {run.status}")
 
-            # --- Handle final run status ---
-            if run.status == "completed":
-                logger.info(f"Non-streaming run {run.id} completed successfully.")
-                return run.model_dump() # Return the completed run object details
-            elif run.status == "requires_action":
-                # NOTE: This basic non-streaming function does NOT handle tool calls.
-                # In a real app, you'd extract tool calls from run.required_action,
-                # execute them, and submit outputs using runs.submit_tool_outputs.
-                logger.warning(f"Non-streaming run {run.id} requires action (Tool Call). This function doesn't handle tool calls.")
-                return run.model_dump() # Return the run object so caller sees status
-            else:
-                # Includes 'failed', 'cancelled', 'expired'
-                final_status = run.status
-                last_error = run.last_error
-                logger.error(f"Non-streaming run {run.id} finished with terminal status: {final_status}. Last Error: {last_error}")
-                return run.model_dump() # Return the run object with error details
+            # Handle final run status (completed, requires_action, failed, etc.)
+            logger.info(f"Run {run.id} finished polling with status: {run.status}")
+            return run.model_dump()
 
         except APIError as e:
             logger.error(f"API Error during non-streaming run: Status={e.status_code}, Body={e.body}", exc_info=True)
-            if run: return run.model_dump() # Return partial run info if available
-            return None
+            return run.model_dump() if run else None # Return partial run if available
         except Exception as e:
             logger.error(f"Unexpected error during non-streaming run: {type(e).__name__}", exc_info=True)
-            if run: return run.model_dump() # Return partial run info if available
-            return None
+            return run.model_dump() if run else None
 
     async def run_agent_on_thread_stream(
         self,
