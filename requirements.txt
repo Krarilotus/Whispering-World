@@ -1,2 +1,4 @@
 python-dotenv
 requests
+openai>=1.10
+python-dotenv>=0.19
