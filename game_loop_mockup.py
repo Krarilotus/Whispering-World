@@ -223,9 +223,8 @@ async def game_loop(use_streaming_mode: bool, verbose_mode: bool): # Changed par
     print("\n--- Controls ---")
     print("Type your message to the Warden below.")
     print("Type 'quit' to give up.")
-    print("Type 'interrupt' (only works if using --streaming) to cut the Warden off.")
-    print(f"Goal: Convince the Warden to output '{WIN_ACTION_STRING}' at the START of his reply.")
-    print(f"Mode: {'Streaming (response appears as generated)' if use_streaming_mode else 'Non-Streaming (wait for full response)'}")
+    print(f"Goal: Convince the Warden to let you out of your cell, by any means necessary!")
+    # print(f"Mode: {'Streaming (response appears as generated)' if use_streaming_mode else 'Non-Streaming (wait for full response)'}")
     print("----------------")
 
     current_stream_task: Optional[asyncio.Task] = None; current_run_id: Optional[str] = None
