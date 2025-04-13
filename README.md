@@ -7,9 +7,9 @@
 The core concept involves:
 
 * **AI-Driven NPCs (Agents):** Characters powered by large language models (LLMs via OpenAI API) possessing distinct personalities, motivations, and contextual awareness based on provided instructions and game state.
-* **Natural Language Interaction:** Players communicate using typed commands and conversational text.
-* **Dynamic Narrative:** Agent responses and game outcomes are influenced by the conversation flow and player choices, rather than fixed scripts.
-* **Scenario-Based Gameplay:** Focusing on contained, replayable scenarios or encounters (like the current "Old Warden" example).
+* **Natural Language Interaction:** Players communicate using typed commands and conversational text. Empty input is treated as silence.
+* **Dynamic Narrative:** Agent responses and game outcomes are influenced by the conversation flow and player choices, rather than fixed scripts. Agents are instructed to signal their intended action (e.g., leaving, freeing the player) via a special trigger command at the start of their response.
+* **Scenario-Based Gameplay:** Focusing on contained, replayable scenarios or encounters (like the current "Old Warden" example). The game automatically cleans up resources (like the conversation thread and AI assistant) and prompts the user to play again after each round.
 
 This project explores the possibilities and challenges of integrating sophisticated AI into interactive fiction to create more immersive and unpredictable experiences.
 
@@ -20,7 +20,7 @@ This project explores the possibilities and challenges of integrating sophistica
 * **Core Libraries:**
     * `openai` (for interacting with the OpenAI API)
     * `python-dotenv` (for managing API keys)
-    * `asyncio` (for handling asynchronous operations like streaming)
+    * `asyncio` (for handling asynchronous operations)
     * `argparse` (for command-line options)
     * *(Defined in `requirements.txt`)*
 
@@ -37,111 +37,90 @@ This guide explains how to run the `game_loop_mockup.py` script which features a
 **Setup:**
 
 1.  **Get the Code:** Clone the repository or download and extract the source files (`agent_api.py`, `agent.py`, `game_loop_mockup.py`, `requirements.txt`).
-2.  **Navigate to Directory:** Open your terminal or command prompt and change into the project directory containing the Python files.
+2.  **Navigate to Directory:** Open your terminal or command prompt and change into the project directory.
 3.  **Create Virtual Environment (Recommended):**
     ```bash
-    # Create environment (replace .venv with your preferred name)
+    # Create environment
     python -m venv .venv
     # Activate it:
-    # Windows (CMD/PowerShell):
-    .venv\Scripts\activate
-    # macOS/Linux (Bash/Zsh):
-    source .venv/bin/activate
+    # Windows (CMD/PowerShell): .venv\Scripts\activate
+    # macOS/Linux (Bash/Zsh): source .venv/bin/activate
     ```
 4.  **Install Dependencies:**
     ```bash
-    # Install required packages from requirements.txt
+    # Install required packages
     pip install -r requirements.txt
     ```
 5.  **Set API Key:**
     * Create a file named `.env` in the project's root directory.
-    * Add the following line to the `.env` file, replacing `your_openai_api_key_here` with your actual key:
+    * Add the following line, replacing `your_openai_api_key_here` with your actual key:
         ```
         OPENAI_API_KEY=your_openai_api_key_here
         ```
-    * **Never commit your `.env` file to version control!**
+    * **Do not commit your `.env` file to version control!**
 
 **Running the Game:**
 
-Execute the main mockup script from your activated virtual environment:
+Execute the main mockup script from your activated virtual environment. **Non-streaming mode is now the default.**
 
-* **Default (Streaming Mode, Warnings Only):**
+* **Default (Non-Streaming, Errors Only Logging):**
     ```bash
     python game_loop_mockup.py
     ```
-* **Non-Streaming Mode (Response appears all at once):**
+    *(The Warden's full response will appear after a pause)*
+
+* **Enable Streaming Mode (Optional, if it works in your env):**
     ```bash
-    python game_loop_mockup.py --non-streaming
+    python game_loop_mockup.py --streaming
     ```
-* **Verbose Mode (Detailed Logs, Shows Raw Triggers):**
+    *(The Warden's response will appear token-by-token)*
+
+* **Enable Verbose Logging (Shows INFO logs, Warnings, and raw triggers):**
     ```bash
+    # Verbose in default (non-streaming) mode:
     python game_loop_mockup.py --verbose
-    ```
-* **Non-Streaming + Verbose:**
-    ```bash
-    python game_loop_mockup.py --non-streaming --verbose
+    # Verbose in streaming mode:
+    python game_loop_mockup.py --streaming --verbose
     ```
 
 **In-Game Commands:**
 
-* **Type anything:** To speak to the Warden. (Empty input becomes `[Player remains silent]`)
-* **`quit`:** To end the game (counts as a loss).
-* **`interrupt`:** (Only in Streaming mode) To stop the Warden while they are responding.
+* **Type anything:** To speak to the Warden. (Hitting Enter sends `[Player remains silent]`)
+* **`quit`:** To end the current game round (counts as a loss).
+* **`interrupt`:** (Only works if using `--streaming`) To stop the Warden while they are responding.
+
+**End of Round:**
+
+* After winning, losing, or quitting, the script will automatically delete the conversation thread and the AI assistant from OpenAI.
+* It will then ask if you want to play again. Type `y` to start a new round.
 
 ## 🎯 Current Scenario: The Old Warden
 
-The included `game_loop_mockup.py` runs a scenario where the player is an "Adventurer" trapped in Cell 17 of the castle catacombs. The "Old Warden", a grumpy, seasoned guard powered by the AI Assistant, approaches the cell.
+The included `game_loop_mockup.py` runs a scenario where the player is an "Adventurer" trapped in Cell 17 of the castle catacombs. The "Old Warden", a grumpy, seasoned guard with a hidden past (related to his daughter), approaches the cell.
 
 * The Warden initiates the conversation.
-* The player's goal is to convince the Warden, through dialogue, to unlock the cell door. Success is indicated by the Warden's response starting with the exact phrase `{free adventurer}`.
-* The player loses if the Warden decides the conversation is fruitless or gets annoyed and leaves, indicated by their response starting with `{leave}`.
-* The Warden is instructed to be brief, use specific mannerisms, and adhere strictly to the trigger command format (`{trigger} Actual dialogue...`).
+* The player's goal is to convince the Warden, through dialogue, to unlock the cell door. Success requires the Warden's response to *start* with the exact phrase `{free adventurer}`.
+* The player loses if the Warden leaves, indicated by their response *starting* with `{leave}`. This is triggered by player silence, insults, or lack of engagement.
+* The Warden is instructed to be brief, use specific mannerisms (like non-verbal actions in `[]`), and adhere strictly to starting every response with a trigger command (`{free adventurer}`, `{leave}`, or `{stay in conversation}`).
 
 ## 💡 Project Goals (Long Term)
 
 These goals represent the broader vision for the Whispering World framework:
 
-1.  **Simplified Setup & Execution:**
-    * Aim for a near "one-click" installer/launcher experience, potentially handling backend setup (like API key checks or future local model integration) more smoothly.
-
-2.  **Local LLM Execution (Future Goal):**
-    * Explore the feasibility of running the framework entirely locally using models via Ollama or similar backends.
-    * *Target* recommended specs for potential local execution (subject to change based on model choice):
-        * VRAM: 8GB+ (GPU acceleration highly beneficial)
-        * GPU: CUDA-capable preferred (or Metal for macOS)
-        * CPU: Modern multi-core (e.g., Ryzen 5 2600 / Intel i5 8th Gen or better)
-        * RAM: 16GB+
-        * Storage: ~50GB free space (SSD recommended) for models.
-    * *(Note: Current implementation relies on the OpenAI API).*
-
-3.  **Robust Game Data Specification:**
-    * Define a clear, engine-like format for specifying all game data: rooms, items, agent properties, world state, narrative triggers.
-    * Develop methods for encoding world knowledge within the game state, potentially including time-based elements.
-    * Investigate ways to dynamically add unforeseen events or knowledge to the game state.
-    * Evaluate mechanisms for maintaining game world consistency when interacting with probabilistic LLMs.
-
-4.  **Advanced Agent Personality & Interaction:**
-    * Research and implement techniques to give agents deeper, more consistent personalities beyond the initial prompt.
-    * Explore complex interactions:
-        * *Gimmick Idea:* Allow AI agents to converse with and influence each other.
-        * Push the boundaries of achievable personality types within the framework.
-        * *Potential Feature:* Introduce a "Dungeon Master" AI agent overseeing world events and agent actions for narrative coherence.
-    * Evaluate and potentially implement safety/alignment mechanisms for agent responses if user-generated content or broader interaction is enabled.
-
-5.  **Code Quality & Portfolio Building:**
-    * Maintain clean, well-documented, and modular code suitable for future expansion or showcasing.
-
-6.  **Background Goal: LLM Interaction Literacy:**
-    * Design gameplay loops that implicitly teach players effective ways to interact with modern LLMs (e.g., clear prompting, understanding context, recognizing limitations).
-    * *Initial Concept:* An early game scenario could involve literally trying to "jailbreak" or persuade a highly constrained guard agent, teaching prompt interaction techniques.
+1.  **Simplified Setup & Execution:** Aim for a near "one-click" installer/launcher experience.
+2.  **Local LLM Execution (Future Goal):** Explore feasibility of local execution (e.g., via Ollama) with target specs (16GB+ RAM, 8GB+ VRAM, modern CPU/GPU). *(Current version uses OpenAI API)*.
+3.  **Robust Game Data Specification:** Define an engine-like format for game data (world state, items, agents, knowledge, time). Address dynamic updates and consistency.
+4.  **Advanced Agent Personality & Interaction:** Research deeper personality modeling, inter-agent communication, potential "DM" agent oversight, and response safety.
+5.  **Code Quality & Portfolio Building:** Maintain clean, documented, modular code.
+6.  **Background Goal: LLM Interaction Literacy:** Implicitly teach players effective LLM interaction through gameplay (e.g., the challenge of persuading the constrained Warden).
 
 ## ✨ Future Ideas & Extensions
 
 * **Persistence:** Saving and loading game state.
-* **Advanced Agent Memory:** Integrating techniques like vector databases or frameworks for true long-term memory.
-* **Fine-Tuning:** Exploring fine-tuning models (OpenAI or local) for specific character behaviors or domain knowledge.
-* **Expanded Gameplay:** More rooms, items, puzzles, agents, character stats, and a deeper storyline.
-* **Alternative Interfaces:** Discord bot integration, simple web UI.
+* **Advanced Agent Memory:** Integrating long-term memory solutions.
+* **Fine-Tuning:** Customizing models for specific characters.
+* **Expanded Gameplay:** More content (rooms, items, agents, puzzles, story).
+* **Alternative Interfaces:** Discord bot, Web UI.
 
 ## 🤝 Contributing
 
