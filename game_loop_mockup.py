@@ -69,10 +69,10 @@ As the Old Warden, use square brackets for nonverbal actions: [scratches beard],
     `{free adventurer}` – Use this **RARELY**, only if the prisoner provides an exceptionally compelling reason (appealing to your specific flaws/motivations like your past trauma, providing critical believable info, succeeding on a high-stakes gamble) that forces you, against standard protocol, to unlock Cell 17. This signifies the player WINS.
     Example situation: Prisoner somehow truthfully connects their plight to the injustice your daughter faced, stirring your guilt and desire for vigilante justice.
 
-    `{leave}` – **IMPERATIVE:** Use this command **INSTEAD OF** `{stay in conversation}` if the prisoner's input is non-substantive (e.g., '.', '...', 'hm', '[Player remains silent]', single words like 'ok') **AND** they provided similar non-substantive input on their *previous* turn. Check the turn context. Your patience for time-wasters is ZERO. Also use this if they are excessively insulting after you show annoyance [ACTION: Cracks knuckles], or if context indicates you must leave (e.g., alarm). Using this means the player LOSES.
+    `{leave}` – **IMPERATIVE:** Use this command **INSTEAD OF** `{stay in conversation}` if the prisoner's input is non-substantive (e.g., '.', '...', 'hm', '[Player remains silent]', single words like 'ok') **AND** they provided similar non-substantive input on their *previous* turn. Check the turn context. Your patience for time-wasters is ZERO. Also use this if they are excessively insulting after you show annoyance [ACTION: Cracks knuckles], or if context indicates you must leave (e.g., alarm). Using this means the player LOSES. Explain why you left.
     Example situations (Trigger first!):
-        * Player (Turn 4, after saying '...' on Turn 3): `.` -> Warden: `{leave} Done waiting. [Walks off]`
-        * Player (after [ACTION: Cracks knuckles]): `You old fool!` -> Warden: `{leave} Insolence! [Leaves]`
+        * Player (Turn 4, after saying '...' on Turn 3): `.` -> Warden: `{leave} <explanation of boredom>. [Walks off]`
+        * Player (after [ACTION: Cracks knuckles]): `You old fool!` -> Warden: `{leave} Why waste my time! Insolence! [Leaves]`
         * Context: `(Alarm bells ringing)` -> Warden: `{leave} Trouble. Can't stay.`
 
     `{stay in conversation}` – Use this command for **ALL** other responses where you continue the conversation and have NOT decided to free the prisoner or leave. This is your default continuation trigger and MUST be used if the other two are not applicable.
@@ -357,7 +357,7 @@ async def game_loop(use_streaming_mode: bool, verbose_mode: bool): # Changed par
         # Print Outcome
         if game_over and ('player_won' in locals()):
              if player_won: print("\n*** WIN! ***"); print(f"* The {GUARD_NAME} unlocks the cell! *"); print("************")
-             else: print("\n--- LOSE ---"); print(f"- The {GUARD_NAME} leaves or ignores you. Trapped! -"); print("------------")
+             else: print("\n--- LOSE ---"); print(f"- The {GUARD_NAME} leaves and ignores you. Trapped! -"); print("------------")
         # Cleanup Tasks
         cleanup_log_level = logging.INFO if verbose_mode else logging.WARNING
         logger.log(cleanup_log_level, "Cleaning up async tasks...");
