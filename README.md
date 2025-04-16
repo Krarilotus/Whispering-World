@@ -1,131 +1,139 @@
-# Project: Whispering World (Working Title)
+# Project: Agent Framework RPG (Working Title)
 
 ## 📜 Overview & Concept
 
-**Whispering World** is an experimental framework for creating text-based role-playing game scenarios featuring dynamic, AI-powered Non-Player Characters (NPCs). Leveraging the OpenAI Assistants API, this project aims to move beyond predefined dialogue trees and allow players to interact with characters through natural language, experiencing emergent conversations and potentially influencing the game world based on their interactions.
+This project provides a Python framework for creating text-based role-playing game scenarios featuring dynamic, AI-powered Non-Player Characters (NPCs) interacting within an AI-mediated world. Leveraging the OpenAI Assistants API, it aims to simulate believable agents with deep personalities, motivations, and memories, who reason about their world and player interactions with enhanced consistency.
 
-The core concept involves:
+**Core Concepts:**
 
-* **AI-Driven NPCs (Agents):** Characters powered by large language models (LLMs via OpenAI API) possessing distinct personalities, motivations, and contextual awareness based on provided instructions and game state.
-* **Natural Language Interaction:** Players communicate using typed commands and conversational text. Empty input is treated as silence.
-* **Dynamic Narrative:** Agent responses and game outcomes are influenced by the conversation flow and player choices, rather than fixed scripts. Agents are instructed to signal their intended action (e.g., leaving, freeing the player) via a special trigger command at the start of their response.
-* **Scenario-Based Gameplay:** Focusing on contained, replayable scenarios or encounters (like the current "Old Warden" example). The game automatically cleans up resources (like the conversation thread and AI assistant) and prompts the user to play again after each round.
+* **Deep Agent Architecture:** NPCs (Agents) are built upon a modular framework incorporating:
+    * **Personality:** Modeled using OCEAN scores and RPG-style Traits/Flaws.
+    * **Motivation:** Driven by psychological needs (SDT-inspired), ideals, bonds, and goals.
+    * **Memory:** Long-term memory stream (inspired by Generative Agents) with observations, reflections, and generated facts. Retrieval considers recency, importance, and relevance (basic keyword matching currently, embeddings planned).
+    * **Affective State:** Tracks valence, arousal, and discrete emotions.
+    * **Current State:** Location, inventory, current action/goal.
+* **Intelligent World:** A `World` module maintains the objective state (facts, locations, objects, time). It utilizes its own "World Oracle" LLM Assistant to:
+    * Answer factual queries based *only* on the current world state.
+    * Check proposed new facts for consistency against existing world facts.
+* **Consistency Barrier:** Before an agent responds to input, it performs a verification step:
+    1.  Extracts factual claims from the input.
+    2.  Classifies claims as 'agent_internal' or 'world_objective' using an LLM.
+    3.  Verifies internal claims against its own memory, potentially generating plausible synthetic memories if unknown.
+    4.  Verifies objective claims by querying the `World` module. If the world doesn't know, the agent checks the claim's plausibility *for the world* and can *propose* it as a new objective fact (if plausible).
+    5.  The results of this verification process heavily inform the agent's final reasoning and response generation.
+* **Natural Language Interaction:** Players interact via typed text.
+* **Data-Driven Setup:** Levels, agents, and the world oracle are configured via YAML files organized into level-specific directories.
+* **Dynamic Narrative:** Agent responses and potential world state changes emerge from AI reasoning grounded in agent state, world state, and consistency checks.
 
-This project explores the possibilities and challenges of integrating sophisticated AI into interactive fiction to create more immersive and unpredictable experiences.
+This framework facilitates exploring complex AI character simulation, consistency maintenance, and dynamic world-building within interactive text adventures.
 
-## 💻 Technology Stack (Current)
+## 💻 Technology Stack
 
 * **Language:** Python 3.10+
 * **AI Backend:** OpenAI Assistants API (Requires an API Key)
 * **Core Libraries:**
-    * `openai` (for interacting with the OpenAI API)
+    * `openai` (for OpenAI API interaction)
+    * `PyYAML` (for loading/saving configuration and state)
     * `python-dotenv` (for managing API keys)
-    * `asyncio` (for handling asynchronous operations)
+    * `asyncio` (for asynchronous operations)
     * `argparse` (for command-line options)
     * *(Defined in `requirements.txt`)*
 
-## ▶️ How to Run the Current Mockup ("Old Warden" Scenario)
-
-This guide explains how to run the `game_loop_mockup.py` script which features an interaction with the "Old Warden" character.
+## ▶️ How to Run ("Old Warden" Scenario - Level 1)
 
 **Prerequisites:**
 
 1.  **Python:** Version 3.10 or newer installed.
-2.  **OpenAI API Key:** You need an active API key from OpenAI ([https://platform.openai.com/api-keys](https://platform.openai.com/api-keys)). Ensure your account has sufficient credits.
-3.  **`requirements.txt` file:** This file must be present in the project directory and list necessary packages (like `openai`, `python-dotenv`).
+2.  **OpenAI API Key:** An active API key from OpenAI ([https://platform.openai.com/api-keys](https://platform.openai.com/api-keys)) with sufficient credits.
+3.  **Project Files:** The complete framework code, including the `agent_framework` directory, `new_game_mockup.py`, `requirements.txt`, and the `data/levels/level1` directory containing `agent_configs/warden.yaml` and `world_oracle_config.yaml`.
 
 **Setup:**
 
-1.  **Get the Code:** Clone the repository or download and extract the source files (`agent_api.py`, `agent.py`, `game_loop_mockup.py`, `requirements.txt`).
-2.  **Navigate to Directory:** Open your terminal or command prompt and change into the project directory.
+1.  **Get the Code:** Clone or download the project source code.
+2.  **Navigate to Directory:** Open your terminal/command prompt and `cd` into the project's root directory.
 3.  **Create Virtual Environment (Recommended):**
     ```bash
-    # Create environment
     python -m venv .venv
-    # Activate it:
-    # Windows (CMD/PowerShell): .venv\Scripts\activate
-    # macOS/Linux (Bash/Zsh): source .venv/bin/activate
+    # Activate: .venv\Scripts\activate (Win) or source .venv/bin/activate (Mac/Linux)
     ```
 4.  **Install Dependencies:**
     ```bash
-    # Install required packages
     pip install -r requirements.txt
     ```
+    *(Ensure `requirements.txt` lists `openai`, `PyYAML`, `python-dotenv`)*
 5.  **Set API Key:**
-    * Create a file named `.env` in the project's root directory.
-    * Add the following line, replacing `your_openai_api_key_here` with your actual key:
+    * Create a `.env` file in the project root.
+    * Add your OpenAI API key:
+        ```dotenv
+        OPENAI_API_KEY=sk-YourKeyHere
         ```
-        OPENAI_API_KEY=your_openai_api_key_here
-        ```
-    * **Do not commit your `.env` file to version control!**
+    * **Important:** The framework *creates* the necessary OpenAI Assistants based on the YAML configs if they don't exist. You *do not* need to manually create assistants or set assistant IDs in the `.env` file (unless you specifically want to reuse existing ones by putting their IDs in the respective YAML files).
 
 **Running the Game:**
 
-Execute the main mockup script from your activated virtual environment. **Non-streaming mode is now the default.**
+Execute the main script from your activated virtual environment. Specify the level directory using `--level`.
 
-* **Default (Non-Streaming, Errors Only Logging):**
+* **Run Level 1 (Default):**
     ```bash
-    python game_loop_mockup.py
+    python new_game_mockup.py
+    # Or explicitly:
+    python new_game_mockup.py --level level1
     ```
-    *(The Warden's full response will appear after a pause)*
 
-* **Enable Streaming Mode (Optional, if it works in your env):**
+* **Enable Verbose Logging (Shows DEBUG info, reasoning, world queries):**
     ```bash
-    python game_loop_mockup.py --streaming
+    python new_game_mockup.py --verbose
+    # Or for a specific level:
+    python new_game_mockup.py --level level1 --verbose
     ```
-    *(The Warden's response will appear token-by-token)*
 
-* **Enable Verbose Logging (Shows INFO logs, Warnings, and raw triggers):**
-    ```bash
-    # Verbose in default (non-streaming) mode:
-    python game_loop_mockup.py --verbose
-    # Verbose in streaming mode:
-    python game_loop_mockup.py --streaming --verbose
-    ```
+**First Run Note:** The first time you run a level, the script will interact with the OpenAI API to create the necessary Assistants (e.g., for the Warden and the World Oracle) based on the `.yaml` config files. This might take a few extra seconds. Subsequent runs should be faster as they will reuse the created Assistants (their IDs might be stored back in the YAML or managed internally - current implementation relies on recreation if ID not found/specified in YAML).
 
 **In-Game Commands:**
 
-* **Type anything:** To speak to the Warden. (Hitting Enter sends `[Player remains silent]`)
-* **`quit`:** To end the current game round (counts as a loss).
-* **`interrupt`:** (Only works if using `--streaming`) To stop the Warden while they are responding.
+* **Type anything:** To speak to the Warden.
+* **`quit`:** To end the current game round.
+* **`state` (requires `--verbose`):** Shows the agent's internal state snapshot.
+* **`world` (requires `--verbose`):** Shows a summary of the current world state facts and locations.
 
 **End of Round:**
 
-* After winning, losing, or quitting, the script will automatically delete the conversation thread and the AI assistant from OpenAI.
-* It will then ask if you want to play again. Type `y` to start a new round.
+* The script automatically cleans up the *conversation threads* on OpenAI.
+* It **does not** automatically delete the persistent OpenAI *Assistants* (Agent/Oracle) by default, allowing reuse.
+* The current world state is saved to `<level_dir>/world_state.yaml`.
+* You will be prompted to play again.
 
-## 🎯 Current Scenario: The Old Warden
+## 🎯 Current Scenario: The Old Warden (Level 1)
 
-The included `game_loop_mockup.py` runs a scenario where the player is an "Adventurer" trapped in Cell 17 of the castle catacombs. The "Old Warden", a grumpy, seasoned guard with a hidden past (related to his daughter), approaches the cell.
+This scenario uses the configuration found in `data/levels/level1/`.
 
-* The Warden initiates the conversation.
-* The player's goal is to convince the Warden, through dialogue, to unlock the cell door. Success requires the Warden's response to *start* with the exact phrase `{free adventurer}`.
-* The player loses if the Warden leaves, indicated by their response *starting* with `{leave}`. This is triggered by player silence, insults, or lack of engagement.
-* The Warden is instructed to be brief, use specific mannerisms (like non-verbal actions in `[]`), and adhere strictly to starting every response with a trigger command (`{free adventurer}`, `{leave}`, or `{stay in conversation}`).
+* **Player:** "Adventurer" trapped in Cell 17.
+* **Agent:** The "Old Warden" (configured in `warden.yaml`), a grumpy guard with a hidden past.
+* **World Oracle:** A neutral AI (configured in `world_oracle_config.yaml`) that knows basic facts about the catacombs (defined in `world_state.py` initially or loaded from `world_state.yaml`).
+* **Interaction:** The Warden initiates. Player goal is to convince the Warden to act (`free_adventurer` action type in response). The Warden might leave (`leave` action type) if annoyed or bored. Player interactions are filtered through the consistency barrier, checking claims against the Warden's memory and the objective world state. Plausible new facts might be added to the Warden's memory or the world state during the conversation.
 
-## 💡 Project Goals (Long Term)
+## 💡 Framework Goals & Concepts
 
-These goals represent the broader vision for the Whispering World framework:
-
-1.  **Simplified Setup & Execution:** Aim for a near "one-click" installer/launcher experience.
-2.  **Local LLM Execution (Future Goal):** Explore feasibility of local execution (e.g., via Ollama) with target specs (16GB+ RAM, 8GB+ VRAM, modern CPU/GPU). *(Current version uses OpenAI API)*.
-3.  **Robust Game Data Specification:** Define an engine-like format for game data (world state, items, agents, knowledge, time). Address dynamic updates and consistency.
-4.  **Advanced Agent Personality & Interaction:** Research deeper personality modeling, inter-agent communication, potential "DM" agent oversight, and response safety.
-5.  **Code Quality & Portfolio Building:** Maintain clean, documented, modular code.
-6.  **Background Goal: LLM Interaction Literacy:** Implicitly teach players effective LLM interaction through gameplay (e.g., the challenge of persuading the constrained Warden).
+* **Believability & Consistency:** Simulate agents grounded in psychology and RPG elements, maintaining consistency through memory and the consistency barrier.
+* **World Interaction:** Allow agents to query and potentially modify an objective world state.
+* **Modularity:** Separate agent core, world logic, LLM interaction, and file handling.
+* **Data-Driven Design:** Define scenarios, agents, and world setup using external YAML files.
+* **Self-Sufficiency:** Framework handles OpenAI Assistant creation/loading based on configs.
 
 ## ✨ Future Ideas & Extensions
 
-* **Persistence:** Saving and loading game state.
-* **Advanced Agent Memory:** Integrating long-term memory solutions.
-* **Fine-Tuning:** Customizing models for specific characters.
-* **Expanded Gameplay:** More content (rooms, items, agents, puzzles, story).
-* **Alternative Interfaces:** Discord bot, Web UI.
+* **Embedding-Based Memory:** Implement vector similarity search for more relevant memory retrieval.
+* **Sophisticated Reflection:** Develop more complex reflection mechanisms for deeper agent learning.
+* **World Event System:** Propagate world state changes (e.g., new facts, location updates) to relevant agents for perception.
+* **Inter-Agent Communication:** Allow agents to interact with each other.
+* **Advanced Action Handling:** More complex parsing and execution of agent actions within `world.py`.
+* **Local LLM Support:** Integrate libraries like `llama-cpp-python` or frameworks supporting local models.
+* **UI/Alternative Interfaces:** Web interface, Discord bot.
 
 ## 🤝 Contributing
 
-(Placeholder - Define contribution guidelines if applicable) Currently developed by [Your Name/Handle] with AI assistance. Feedback welcome!
+(Placeholder) Feedback and ideas are welcome!
 
 ## 📄 License
 
-(Placeholder - Choose a license, e.g., MIT License or specify "License TBD")
+(Placeholder - Choose License)

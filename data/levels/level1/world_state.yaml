@@ -1,0 +1,164 @@
+current_time: 1744811349.7571242
+entities:
+  ent_d47da86a:
+    id: ent_d47da86a
+    name: New Prisoner
+    type: Person
+    state: imprisoned
+    mood: anxious
+  ent_b3e21126:
+    id: ent_b3e21126
+    name: Cell 17
+    type: Location
+    state: unoccupied
+    security_level: high
+  ent_fda0806e:
+    id: ent_fda0806e
+    name: The Bars
+    type: Object
+    state: secure
+    material: iron
+  ent_2408a497:
+    id: ent_2408a497
+    name: You
+    type: Unknown
+    state: present
+    mood: neutral
+  ent_c4e330ea:
+    id: ent_c4e330ea
+    name: This Important Letter
+    type: Object
+    state: sealed
+    importance_level: high
+  ent_b9621600:
+    id: ent_b9621600
+    name: Your Daughter
+    type: Person
+    state: safe
+    mood: curious
+  ent_6bc1a4d0:
+    id: ent_6bc1a4d0
+    name: The Priest
+    type: Person
+    state: faithful
+    mood: serene
+  ent_bbe1b731:
+    id: ent_bbe1b731
+    name: The Illness
+    type: Condition
+    severity: mild
+    state: active
+  ent_9d94547a:
+    id: ent_9d94547a
+    name: The New Prisoner
+    type: Person
+    state: imprisoned
+    mood: anxious
+  ent_d7731d72:
+    id: ent_d7731d72
+    name: The Letter
+    type: Object
+    state: unopened
+    importance_level: medium
+  ent_7555756d:
+    id: ent_7555756d
+    name: The World
+    type: Object
+    state: vibrant
+    importance_level: high
+  ent_0157e61b:
+    id: ent_0157e61b
+    name: The King
+    type: Person
+    state: ruling
+    mood: authoritative
+  ent_b18b9b19:
+    id: ent_b18b9b19
+    name: Mikaluos the Wise
+    type: Person
+    state: knowledgeable
+    mood: calm
+  ent_b1bc3183:
+    id: ent_b1bc3183
+    name: the Lands
+    type: Location
+    state: expansive
+    security_level: variable
+  ent_6cf96c54:
+    id: ent_6cf96c54
+    name: the Great Plague
+    type: Phenomenon
+    state: active
+    severity: high
+  ent_c3d4ec45:
+    id: ent_c3d4ec45
+    name: the Authorities
+    type: Unknown
+    state: active
+    mood: determined
+  ent_c629cb69:
+    id: ent_c629cb69
+    name: the High Apostle
+    type: Person
+    state: revered
+    mood: inspirational
+  ent_3b0578b8:
+    id: ent_3b0578b8
+    name: a Printing Press
+    type: Object
+    state: functional
+    importance_level: medium
+  ent_6f894427:
+    id: ent_6f894427
+    name: Flyers
+    type: Object
+    state: printed
+    importance_level: low
+  ent_c58fe55e:
+    id: ent_c58fe55e
+    name: the Youth
+    type: Unknown
+    state: energetic
+    mood: curious
+  ent_3491f77e:
+    id: ent_3491f77e
+    name: the Unjust System
+    type: Unknown
+    state: oppressive
+    mood: frustrating
+  ent_8aa65097:
+    id: ent_8aa65097
+    name: Mikaluos
+    type: Person
+    state: knowledgeable
+    mood: calm
+  ent_51151458:
+    id: ent_51151458
+    name: the Situation
+    type: Unknown
+    state: tense
+    mood: uncertain
+  ent_ae4e4a72:
+    id: ent_ae4e4a72
+    name: a Web Spun with Deceit
+    type: Unknown
+    state: entangling
+    mood: suspicious
+  ent_bd7dbd7d:
+    id: ent_bd7dbd7d
+    name: Ill
+    type: Unknown
+    state: unwell
+    mood: distressed
+locations_index:
+  ent_b3e21126:
+    id: ent_b3e21126
+    name: Cell 17
+    description: ''
+    entities_present: []
+  ent_b1bc3183:
+    id: ent_b1bc3183
+    name: the Lands
+    description: ''
+    entities_present: []
+relationships: []

@@ -1,4 +1,5 @@
 # this requires python_version>=3.10
+PyYAML
 requests
 openai>=1.10
 python-dotenv>=0.19

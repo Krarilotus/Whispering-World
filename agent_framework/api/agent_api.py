@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # --- Constants ---
 DEFAULT_MODEL = "gpt-4o-mini"  # Recommended starting point
-DEFAULT_DM_MODEL = "gpt-4o"  # For vaster more complicated tasks
+DEFAULT_DM_MODEL = "gpt-4o-mini"  # For vaster more complicated tasks use gpt-4o
 
 # --- Streaming Event Handler ---
 class StreamingEventHandler(AssistantEventHandler):
