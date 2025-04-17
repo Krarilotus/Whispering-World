@@ -1,6 +1,8 @@
 # agent_framework/core/motivation.py
 from typing import Dict, List, Optional, Any
 from .personality import Personality, AffectiveState
+import logging 
+logger = logging.getLogger(__name__)
 
 # --- Psychological Needs (SDT inspired) ---
 DEFAULT_NEEDS = {
@@ -132,6 +134,38 @@ class MotivationSystem:
         """Returns the single most important goal."""
         prioritized = self.prioritize_goals(personality, affective_state)
         return prioritized[0] if prioritized else None
+
+    def set_or_add_goal(self, description: str, status: str, source: str = "llm_suggestion", urgency: float = 5.0):
+        """Updates status/urgency of existing goal, or adds a new one if status is 'active'."""
+        found_goal = None
+        for goal in self.active_goals:
+            if goal.description == description:
+                found_goal = goal
+                break
+
+        if found_goal:
+            # Update existing goal status and urgency
+            if found_goal.status != status:
+                found_goal.status = status
+                logger.info(f"Updated existing goal '{description[:50]}' status to '{status}'.")
+            # Always update urgency if provided (e.g., rule trigger raises urgency)
+            if urgency > found_goal.urgency:
+                 logger.info(f"Updating urgency for goal '{description[:50]}' from {found_goal.urgency:.1f} to {urgency:.1f}.")
+                 found_goal.urgency = urgency
+            elif urgency < found_goal.urgency: # Allow urgency decrease too if needed
+                 logger.debug(f"Updating urgency for goal '{description[:50]}' from {found_goal.urgency:.1f} to {urgency:.1f}.")
+                 found_goal.urgency = urgency
+
+        elif status == 'active':
+            # If status is active and no matching *active* goal found, add it as a new goal
+            logger.info(f"Adding new active goal '{description[:50]}' from '{source}' (Urgency: {urgency:.1f}).")
+            new_goal = Goal(description=description, source=source, urgency=urgency, status="active")
+            # Use internal add_goal to handle potential duplicates just in case (though should be rare now)
+            self.add_goal(new_goal, check_duplicates=True)
+
+        # Clean up inactive goals periodically or here
+        self.active_goals = [g for g in self.active_goals if g.status == "active"]
+
 
     def set_goal_status(self, goal_description: str, status: str):
         """Sets the status ('completed' or 'failed') of a goal by its description."""
