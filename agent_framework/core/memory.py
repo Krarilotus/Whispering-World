@@ -2,13 +2,35 @@
 import time
 import datetime
 import uuid
-from typing import Optional, List, Dict, Any, Tuple
+import logging
+import numpy as np
+from typing import Optional, List, Dict, Any, Tuple, Union # Use list, dict etc.
+
+logger = logging.getLogger(__name__)
+
+try:
+    import faiss
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMER_MODEL = 'all-MiniLM-L6-v2' # Common choice, relatively small
+    # Consider other models based on performance/needs: e.g., 'multi-qa-MiniLM-L6-cos-v1'
+    logger.info(f"Loading sentence transformer model: {SENTENCE_TRANSFORMER_MODEL}...")
+    embedding_model = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL)
+    # Get embedding dimension
+    embedding_dim = embedding_model.get_sentence_embedding_dimension()
+    logger.info(f"Sentence transformer model loaded. Embedding dimension: {embedding_dim}")
+    FAISS_AVAILABLE = True
+except ImportError:
+    logger.warning("FAISS or sentence-transformers not found. Falling back to basic keyword retrieval.")
+    logger.warning("Install with: pip install sentence-transformers faiss-cpu")
+    FAISS_AVAILABLE = False
+    embedding_model = None
+    embedding_dim = None
 
 # --- Constants ---
 DEFAULT_IMPORTANCE = 5.0 # On a scale of 1-10
-RECENCY_WEIGHT = 1.0
+RECENCY_WEIGHT = 0.1 # Lower weight for recency now?
 IMPORTANCE_WEIGHT = 1.0
-RELEVANCE_WEIGHT = 1.0 # Requires embedding similarity in full implementation
+RELEVANCE_WEIGHT = 1.5 # Higher weight for semantic relevance
 
 class MemoryObject:
     """Base class for different types of memories."""
@@ -17,15 +39,16 @@ class MemoryObject:
         self.description: str = description
         self.creation_timestamp: float = timestamp if timestamp is not None else time.time()
         self.last_access_timestamp: float = self.creation_timestamp
-        self.importance_score: float = max(1.0, min(10.0, importance)) # Clamp importance
-        # Placeholder for embedding vector - requires a real embedding model & storage
-        self.embedding_vector: Optional[List[float]] = None
+        self.importance_score: float = max(1.0, min(10.0, importance))
+        # Embedding vector - will be calculated by MemoryStream
+        self.embedding: Optional[np.ndarray] = None
 
     def __repr__(self) -> str:
         time_str = datetime.datetime.fromtimestamp(self.creation_timestamp).strftime('%Y-%m-%d %H:%M:%S')
-        return f"[{time_str}][{self.importance_score:.1f}] {self.description}"
+        access_time_str = datetime.datetime.fromtimestamp(self.last_access_timestamp).strftime('%H:%M:%S')
+        return f"[{time_str} (Acc: {access_time_str}) Imp: {self.importance_score:.1f}] {self.description}"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serializes basic memory info to a dictionary."""
         return {
             "id": self.id,
@@ -34,250 +57,232 @@ class MemoryObject:
             "creation_timestamp": self.creation_timestamp,
             "last_access_timestamp": self.last_access_timestamp,
             "importance_score": self.importance_score,
-            # Embedding vectors are usually not directly serialized to YAML
+            # Exclude embedding from basic YAML serialization
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'MemoryObject':
-        """Deserializes from a dictionary."""
-        # Note: This is basic; subclasses might need specific handling.
-        # We determine the type from the dict to reconstruct the correct class.
+    def from_dict(cls, data: dict[str, Any]) -> 'MemoryObject':
+        """Deserializes from a dictionary. Embedding needs separate handling."""
         mem_type = data.get("type", "MemoryObject")
-        if mem_type == "Observation":
-            mem = Observation(data["description"], data["importance_score"], data["creation_timestamp"])
-        elif mem_type == "Reflection":
-            mem = Reflection(data["description"], data.get("synthesized_memory_ids", []), data["importance_score"], data["creation_timestamp"])
-        elif mem_type == "GeneratedFact":
-             mem = GeneratedFact(data["description"], data.get("source_claim", ""), data["importance_score"], data["creation_timestamp"])
-        else: # Default to MemoryObject if type unknown or base
-            mem = cls(data["description"], data["importance_score"], data["creation_timestamp"])
+        mem_class = globals().get(mem_type, MemoryObject) # Get class object by name
 
-        mem.id = data.get("id", mem.id) # Restore ID
+        # Handle potential missing keys gracefully during load
+        mem = mem_class(
+            description=data.get("description", ""),
+            importance=data.get("importance_score", DEFAULT_IMPORTANCE),
+            timestamp=data.get("creation_timestamp") # Pass None if missing
+        )
+        mem.id = data.get("id", mem.id) # Restore ID if present
         mem.last_access_timestamp = data.get("last_access_timestamp", mem.creation_timestamp)
-        # Embedding would be loaded separately if stored externally
+        # Embedding must be recalculated or loaded separately after object creation
+        mem.embedding = None
         return mem
 
-class Observation(MemoryObject):
-    """A memory of a direct observation or event."""
-    def __init__(self, description: str, importance: float = DEFAULT_IMPORTANCE, timestamp: Optional[float] = None):
-        super().__init__(description, importance, timestamp)
+# --- Subclasses (Observation, Reflection, GeneratedFact) remain the same ---
+class Observation(MemoryObject): pass
+class Reflection(MemoryObject): # Simplified - no explicit link tracking in basic dict
+    def __init__(self, description: str, importance: float = DEFAULT_IMPORTANCE + 2.0, timestamp: Optional[float] = None):
+         super().__init__(description, importance, timestamp)
+class GeneratedFact(MemoryObject): # Simplified
+     def __init__(self, description: str, source_claim: str = "", importance: float = DEFAULT_IMPORTANCE - 1.0, timestamp: Optional[float] = None):
+          super().__init__(description, importance, timestamp)
+          self.source_claim = source_claim # Still useful to know origin
 
-class Reflection(MemoryObject):
-    """A higher-level insight synthesized from other memories."""
-    def __init__(self, description: str, synthesized_memory_ids: List[str], importance: float = DEFAULT_IMPORTANCE + 2.0, timestamp: Optional[float] = None): # Reflections are often more important
-        super().__init__(description, importance, timestamp)
-        self.synthesized_memory_ids: List[str] = synthesized_memory_ids
-
-    def to_dict(self) -> Dict[str, Any]:
-        data = super().to_dict()
-        data["synthesized_memory_ids"] = self.synthesized_memory_ids
-        return data
-
-class GeneratedFact(MemoryObject):
-    """A memory created synthetically during claim verification."""
-    def __init__(self, description: str, source_claim: str, importance: float = DEFAULT_IMPORTANCE -1.0, timestamp: Optional[float] = None): # Start slightly less important?
-        super().__init__(description, importance, timestamp)
-        self.source_claim: str = source_claim # Track the claim that triggered this
-
-    def to_dict(self) -> Dict[str, Any]:
-        data = super().to_dict()
-        data["source_claim"] = self.source_claim
-        return data
 
 class MemoryStream:
-    """Manages the agent's collection of memories."""
+    """Manages the agent's collection of memories with vector-based retrieval."""
     def __init__(self):
-        self._memories: List[MemoryObject] = []
-        self._reflection_threshold = 100 # Example: Trigger reflection after cumulative importance reaches this
-
-    def add_memory(self, memory: MemoryObject):
-        """Adds a new memory to the stream."""
-        self._memories.append(memory)
-        # Potentially trigger reflection if threshold is met by recent memories
-        # self.check_reflection_trigger()
-
-    def get_memories(self, limit: Optional[int] = None) -> List[MemoryObject]:
-        """Returns the most recent memories."""
-        if limit:
-            return sorted(self._memories, key=lambda m: m.creation_timestamp, reverse=True)[:limit]
+        self._memories: dict[str, MemoryObject] = {} # Store by ID for quick lookup
+        self.faiss_index: Optional[faiss.Index] = None
+        self.index_to_id: list[str] = [] # Map faiss index position to memory ID
+        if FAISS_AVAILABLE and embedding_dim:
+            # Using IndexFlatL2 - simple Euclidean distance. IndexFlatIP (Inner Product) is better for cosine similarity with normalized vectors.
+            self.faiss_index = faiss.IndexFlatL2(embedding_dim)
+            logger.info(f"FAISS index initialized with dimension {embedding_dim}.")
         else:
-            return sorted(self._memories, key=lambda m: m.creation_timestamp, reverse=True)
+            logger.warning("FAISS index not available. Retrieval will be limited.")
 
-    def find_memory_by_id(self, memory_id: str) -> Optional[MemoryObject]:
-        """Finds a memory by its unique ID."""
-        for mem in self._memories:
-            if mem.id == memory_id:
-                return mem
+    def _calculate_embedding(self, text: str) -> Optional[np.ndarray]:
+        """ Calculates embedding using the loaded sentence transformer model. """
+        if embedding_model:
+            try:
+                # Encode expects list, ensure text is not empty
+                if not text: return None
+                embedding = embedding_model.encode([text])[0]
+                # Normalize embedding for cosine similarity (if using IndexFlatIP later)
+                # faiss.normalize_L2(embedding.reshape(1, -1))
+                return embedding
+            except Exception as e:
+                logger.error(f"Failed to calculate embedding for text: '{text[:50]}...': {e}")
+                return None
         return None
 
-    def _calculate_retrieval_score(self, memory: MemoryObject, current_time: float, query_embedding: Optional[List[float]] = None) -> float:
-        """Calculates a score based on recency, importance, and relevance."""
-        # Recency: Exponential decay (higher score for recent)
-        # Adjust decay factor as needed (e.g., smaller factor = faster decay)
-        recency_score = 2**(-0.0001 * (current_time - memory.last_access_timestamp))
+    def add_memory(self, memory: MemoryObject):
+        """Adds a new memory, calculates its embedding, and adds to FAISS index."""
+        if memory.id in self._memories:
+            logger.warning(f"Attempting to add memory with duplicate ID: {memory.id}")
+            return # Avoid duplicates
 
-        # Importance: Directly use the score
-        importance_score = memory.importance_score / 10.0 # Normalize to ~0-1
+        # Calculate and store embedding
+        memory.embedding = self._calculate_embedding(memory.description)
 
-        # Relevance: Cosine similarity (requires embeddings)
-        relevance_score = 0.0
-        if query_embedding and memory.embedding_vector:
-            # --- Placeholder for actual cosine similarity calculation ---
-            # import numpy as np
-            # query_vec = np.array(query_embedding)
-            # mem_vec = np.array(memory.embedding_vector)
-            # relevance_score = np.dot(query_vec, mem_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(mem_vec))
-            # relevance_score = (relevance_score + 1) / 2 # Normalize to 0-1
-             pass # Keep as 0 without embeddings
-        elif query_embedding is None:
-             relevance_score = 0.5 # Default relevance if no query embedding
+        # Add to main storage
+        self._memories[memory.id] = memory
+        logger.debug(f"Added memory {memory.id} ('{memory.description[:50]}...')")
 
-        # Combine scores (adjust weights as needed)
-        total_score = (RECENCY_WEIGHT * recency_score +
-                       IMPORTANCE_WEIGHT * importance_score +
-                       RELEVANCE_WEIGHT * relevance_score)
-        return total_score
+        # Add embedding to FAISS index if available and valid
+        if self.faiss_index is not None and memory.embedding is not None:
+            try:
+                # FAISS expects a 2D numpy array (num_vectors x dimension)
+                vector = np.array([memory.embedding]).astype('float32')
+                self.faiss_index.add(vector)
+                self.index_to_id.append(memory.id) # Track ID corresponding to the new index position
+                logger.debug(f"Added embedding for memory {memory.id} to FAISS index. Index size: {self.faiss_index.ntotal}")
+            except Exception as e:
+                logger.error(f"Failed to add embedding for memory {memory.id} to FAISS index: {e}")
 
-    def retrieve_relevant_memories(self, query_text: Optional[str] = None, query_embedding: Optional[List[float]] = None, top_k: int = 10) -> List[MemoryObject]:
-        """Retrieves the top_k most relevant memories based on scoring."""
-        current_time = time.time()
+    def get_memory_by_id(self, memory_id: str) -> Optional[MemoryObject]:
+        """Retrieves a memory by its ID."""
+        return self._memories.get(memory_id)
 
-        # --- Simple Keyword Matching (Fallback if no embeddings) ---
-        # If we have query_text but no embeddings, do basic keyword matching
-        # This is very rudimentary compared to semantic search.
-        scored_memories : List[Tuple[float, MemoryObject]] = []
-        if query_text and not query_embedding:
-            query_words = set(query_text.lower().split())
-            for mem in self._memories:
-                 mem_words = set(mem.description.lower().split())
-                 overlap = len(query_words.intersection(mem_words))
-                 # Basic score: overlap + recency + importance (relevance is overlap here)
-                 recency_score = 2**(-0.0001 * (current_time - mem.last_access_timestamp))
-                 importance_score = mem.importance_score / 10.0
-                 keyword_relevance = overlap / len(query_words) if query_words else 0
-                 score = (RECENCY_WEIGHT * recency_score +
-                          IMPORTANCE_WEIGHT * importance_score +
-                          RELEVANCE_WEIGHT * keyword_relevance)
-                 scored_memories.append((score, mem))
+    def retrieve_relevant_memories(self, query_text: str, top_k: int = 10) -> list[MemoryObject]:
+        """Retrieves the top_k most relevant memories using vector similarity and scoring."""
+        if not query_text: return []
+        logger.debug(f"Retrieving top {top_k} relevant memories for query: '{query_text[:100]}...'")
 
-        # --- Embedding-based Scoring (Preferred if embeddings available) ---
-        elif query_embedding:
-            for mem in self._memories:
-                score = self._calculate_retrieval_score(mem, current_time, query_embedding)
-                scored_memories.append((score, mem))
+        query_embedding = self._calculate_embedding(query_text)
+        if query_embedding is None:
+             logger.warning("Could not generate query embedding. Cannot perform vector search.")
+             # Fallback to basic retrieval? Or return empty? Let's return empty for now.
+             return []
 
-        # --- No Query Scoring (Recency + Importance only) ---
+        # --- FAISS Search (if available) ---
+        retrieved_ids: list[str] = []
+        distances: list[float] = []
+        if self.faiss_index and self.faiss_index.ntotal > 0:
+            try:
+                query_vector = np.array([query_embedding]).astype('float32')
+                # Search returns distances (L2 squared) and indices
+                k_search = min(top_k * 3, self.faiss_index.ntotal) # Retrieve more initially for re-ranking
+                distances_sq, indices = self.faiss_index.search(query_vector, k_search)
+
+                if indices.size > 0 and distances_sq.size > 0:
+                     retrieved_raw = []
+                     for i, idx in enumerate(indices[0]):
+                          if idx != -1: # FAISS uses -1 for no result / padding
+                               mem_id = self.index_to_id[idx]
+                               dist_sq = distances_sq[0][i]
+                               retrieved_raw.append({'id': mem_id, 'distance_sq': dist_sq})
+                     logger.debug(f"FAISS search returned {len(retrieved_raw)} potential candidates.")
+
+                     # Convert L2 distance squared to a similarity score (0-1, higher is better)
+                     # Simple inversion for now, more sophisticated methods exist
+                     max_dist_sq = max(r['distance_sq'] for r in retrieved_raw) if retrieved_raw else 1.0
+                     for r in retrieved_raw:
+                          similarity = 1.0 / (1.0 + r['distance_sq']) # Simple inverse relation
+                          r['relevance_score'] = similarity
+
+                     # Store relevance scores with IDs for re-ranking
+                     relevance_map = {r['id']: r['relevance_score'] for r in retrieved_raw}
+                     retrieved_ids = list(relevance_map.keys())
+
+            except Exception as e:
+                 logger.error(f"FAISS search failed: {e}", exc_info=True)
+                 # Fallback to iterating all memories if search fails? Costly.
+                 retrieved_ids = list(self._memories.keys()) # Consider all if search fails
+                 relevance_map = {mid: 0.5 for mid in retrieved_ids} # Default relevance
+
         else:
-             for mem in self._memories:
-                score = self._calculate_retrieval_score(mem, current_time, None)
-                scored_memories.append((score, mem))
+            # No FAISS - retrieve all memory IDs for scoring (inefficient)
+            logger.warning("FAISS index empty or unavailable. Scoring all memories.")
+            retrieved_ids = list(self._memories.keys())
+            # Cannot calculate relevance without index, use default
+            relevance_map = {mid: 0.5 for mid in retrieved_ids}
 
+
+        # --- Re-ranking based on Recency, Importance, Relevance ---
+        current_time = time.time()
+        scored_memories : list[tuple[float, MemoryObject]] = []
+
+        for mem_id in retrieved_ids:
+            memory = self._memories.get(mem_id)
+            if not memory: continue
+
+            # Recency score (exponential decay)
+            recency_score = 2**(-0.0001 * (current_time - memory.last_access_timestamp))
+            # Importance score (normalized)
+            importance_score = memory.importance_score / 10.0
+            # Relevance score (from FAISS or default)
+            relevance_score = relevance_map.get(mem_id, 0.0) # Default to 0 if somehow missing
+
+            # Combine scores
+            total_score = (RECENCY_WEIGHT * recency_score +
+                           IMPORTANCE_WEIGHT * importance_score +
+                           RELEVANCE_WEIGHT * relevance_score)
+            scored_memories.append((total_score, memory))
 
         # Sort by score descending and take top_k
         scored_memories.sort(key=lambda x: x[0], reverse=True)
         top_memories = [mem for score, mem in scored_memories[:top_k]]
+        logger.info(f"Retrieved {len(top_memories)} memories after re-ranking.")
+        logger.debug(f"Top relevant memory IDs: {[m.id for m in top_memories]}")
 
         # Update last access time for retrieved memories
         for mem in top_memories:
-            mem.last_access_timestamp = current_time
+            memory.last_access_timestamp = current_time
 
         return top_memories
 
-    def reflect(self, llm_interface) -> Optional[Reflection]:
-        """
-        Periodically synthesizes recent memories into higher-level reflections.
-        (Simplified placeholder implementation)
-        """
-        # 1. Trigger condition (e.g., time-based or importance threshold)
-        # Simplified: Just get recent memories for now
-        recent_memories = self.retrieve_relevant_memories(top_k=20) # Get more memories for reflection context
-        if not recent_memories:
-            return None
-
-        # 2. Generate questions (Simplified: Use a generic prompt)
-        reflection_prompt = f"Based on these recent memories, what are 1-3 significant insights, patterns, or conclusions I should draw?\n\nMemories:\n"
-        for mem in recent_memories:
-             reflection_prompt += f"- {mem}\n"
-
-        # 3. Get LLM synthesis
-        synthesis_result = llm_interface.generate_simple_response(reflection_prompt) # Using a simpler call for now
-
-        if synthesis_result:
-             # 4. Create and store reflection
-             new_reflection = Reflection(
-                 description=f"Reflection: {synthesis_result}",
-                 synthesized_memory_ids=[mem.id for mem in recent_memories]
-             )
-             self.add_memory(new_reflection)
-             print(f"--- Agent reflected and added: {new_reflection.description[:100]}...")
-             return new_reflection
-        return None
-
     def get_memory_summary(self, max_memories=20, max_length=1000) -> str:
-        """Provides a simple string summary of the most recent/important memories."""
-        relevant_memories = self.retrieve_relevant_memories(top_k=max_memories)
+        """Provides a simple string summary of the most RECENT memories (not relevance based)."""
+        # Sort by creation time to get most recent
+        sorted_memories = sorted(self._memories.values(), key=lambda m: m.creation_timestamp, reverse=True)
+        summary_mems = sorted_memories[:max_memories]
+
         summary = ""
-        for mem in relevant_memories:
-            mem_str = f"- {mem}\n"
+        for mem in summary_mems:
+            mem_str = f"- {mem}\n" # Use __repr__ for timestamp/importance info
             if len(summary) + len(mem_str) < max_length:
                 summary += mem_str
             else:
+                summary += "- ... (truncated due to length)\n"
                 break
-        return summary if summary else "No relevant memories found."
+        return summary if summary else "No memories found."
 
-    def check_consistency(self, claim: str) -> Tuple[str, List[MemoryObject]]:
-        """
-        Checks if a claim is consistent, contradictory, or unknown based on memory.
-        Returns consistency status ('consistent', 'contradictory', 'unknown') and supporting/contradicting memories.
-        (Simplified: Basic keyword check for contradiction)
-        """
-        relevant_memories = self.retrieve_relevant_memories(query_text=claim, top_k=5)
-        claim_lower = claim.lower()
-        status = "unknown"
-        supporting_evidence = []
-
-        # Rudimentary check: Look for explicit contradictions or strong support.
-        # A real system would use LLM reasoning here.
-        for mem in relevant_memories:
-            mem_lower = mem.description.lower()
-            # Simple contradiction check (e.g., "grandmother is alive" vs "grandmother died")
-            # This is highly fragile and needs LLM nuance.
-            if ("not " + claim_lower in mem_lower) or \
-               (claim_lower.startswith("is ") and "is not " + claim_lower[3:] in mem_lower) or \
-               (claim_lower.startswith("has ") and "does not have " + claim_lower[4:] in mem_lower) or \
-               (claim_lower.startswith("i have a ") and f"i do not have a {claim_lower[9:]}" in mem_lower) or \
-               (claim_lower.startswith("grandmother is sick") and "grandmother died" in mem_lower) or \
-               (claim_lower.startswith("grandmother is sick") and "i have no grandmother" in mem_lower):
-                status = "contradictory"
-                supporting_evidence.append(mem)
-                break # Found contradiction, stop searching
-            # Simple consistency check (needs improvement)
-            if claim_lower in mem_lower:
-                 status = "consistent" # Tentative consistency
-                 supporting_evidence.append(mem)
-                 # Don't break, maybe find contradiction later
-
-        # If still unknown after checking relevant, assume unknown
-        # If we found only potential support, call it consistent for now
-        if status == "unknown" and supporting_evidence:
-             status = "consistent"
-
-        return status, supporting_evidence
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Serializes the memory stream."""
+    # --- Persistence (Simplified - Index needs proper handling) ---
+    def to_dict(self) -> dict[str, Any]:
+        """Serializes the memory stream (excluding FAISS index)."""
         return {
-            "memories": [mem.to_dict() for mem in self._memories],
-            "reflection_threshold": self._reflection_threshold
+            "memories": {mem_id: mem.to_dict() for mem_id, mem in self._memories.items()},
+            # FAISS index needs separate saving/loading (e.g., faiss.write_index / faiss.read_index)
+            # index_to_id map also needs saving
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'MemoryStream':
-        """Deserializes the memory stream."""
-        stream = cls()
-        stream._reflection_threshold = data.get("reflection_threshold", 100)
-        memory_data_list = data.get("memories", [])
-        stream._memories = [MemoryObject.from_dict(mem_data) for mem_data in memory_data_list]
-        # Sort memories by timestamp after loading (optional but good practice)
-        stream._memories.sort(key=lambda m: m.creation_timestamp)
+    def from_dict(cls, data: dict[str, Any]) -> 'MemoryStream':
+        """Deserializes the memory stream and rebuilds index if possible."""
+        stream = cls() # Initializes empty index
+        memory_dict_data = data.get("memories", {})
+        loaded_memories = []
+        for mem_id, mem_data in memory_dict_data.items():
+            if isinstance(mem_data, dict): # Basic check
+                 try:
+                      mem = MemoryObject.from_dict(mem_data)
+                      # Recalculate embedding and add to stream/index
+                      # stream.add_memory(mem) # This recalculates embedding and adds to index
+                      # Optimization: Could store embeddings separately and reload them if needed
+                      loaded_memories.append(mem)
+                 except Exception as e:
+                      logger.error(f"Failed to load memory data for ID {mem_id}: {e} - Data: {mem_data}")
+
+        # Sort by timestamp before adding to ensure index order matches potential loaded ID map
+        loaded_memories.sort(key=lambda m: m.creation_timestamp)
+        logger.info(f"Loaded {len(loaded_memories)} memories from dict. Rebuilding FAISS index...")
+        count = 0
+        for mem in loaded_memories:
+            stream.add_memory(mem) # This recalculates embedding and adds to index
+            count += 1
+        logger.info(f"FAISS index rebuild complete. Final size: {stream.faiss_index.ntotal if stream.faiss_index else 'N/A'}")
+
+        # TODO: Implement loading faiss index and index_to_id map from separate files if saved previously
         return stream

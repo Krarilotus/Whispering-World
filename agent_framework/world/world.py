@@ -3,198 +3,132 @@ import logging
 import uuid
 from typing import Optional, Dict, Any, Tuple, List # Use dict, list etc if preferred
 
-from .world_state import WorldState, ENTITY_ID_PREFIX
-from .world_llm_interface import WorldLLMInterface
+from .world_state import WorldState, ENTITY_ID_PREFIX, Location
+# Import the consolidated interface
+from ..llm.llm_interface import LLM_API_Interface
 from ..file_utils.yaml_handler import load_agent_config_from_yaml, save_agent_state_to_yaml
+# Import prompts module for potential world queries
+from ..llm import prompts
 
 logger = logging.getLogger(__name__)
 
 class World:
-    """Manages the overall simulation world state, entity resolution, and consistency checks."""
-    def __init__(self, world_state: WorldState, world_llm_interface: WorldLLMInterface):
+    """
+    Manages world state (entities, locations). Uses consolidated LLM Interface
+    for optional complex queries initiated by agents. Verification/generation logic is simplified.
+    """
+    def __init__(self,
+                 world_state: WorldState,
+                 llm_interface: LLM_API_Interface, # Use the single interface
+                 world_oracle_assistant_id: Optional[str]):
         self.state = world_state
-        self.llm = world_llm_interface
-        logger.info("World initialized.")
+        self.llm = llm_interface # Store the shared interface
+        self.world_oracle_assistant_id = world_oracle_assistant_id # Store the Oracle's ID
+        self.world_oracle_thread_id: Optional[str] = None # Manage thread locally
+        logger.info(f"World initialized. Oracle Asst ID: {self.world_oracle_assistant_id or 'Not Set'}")
 
+    async def ensure_world_thread(self):
+        """Ensures a dedicated thread exists for the World Oracle using the shared manager."""
+        if self.world_oracle_thread_id:
+            logger.debug(f"World Oracle reusing thread: {self.world_oracle_thread_id}")
+            # Optional: Verify thread still exists? Requires manager access
+            try: await self.llm.manager.client.beta.threads.retrieve(self.world_oracle_thread_id); return True
+            except Exception: logger.warning("Existing world thread invalid, creating new."); self.world_oracle_thread_id = None
+        if not self.world_oracle_assistant_id: logger.error("Cannot ensure world thread: Oracle Asst ID missing."); return False
+        if not self.llm.manager: logger.error("Cannot ensure world thread: LLM Interface lacks AgentManager."); return False
+
+        logger.info("Creating new thread for World Oracle...")
+        self.world_oracle_thread_id = await self.llm.manager.create_thread(
+            metadata={"purpose": "world_oracle_queries", "assistant_id": self.world_oracle_assistant_id})
+        if not self.world_oracle_thread_id: logger.error("Could not create World Oracle thread."); return False
+        logger.info(f"World Oracle assigned thread: {self.world_oracle_thread_id}")
+        return True
+
+    # --- Entity Resolution Helper ---
     def _resolve_entity(self, description: str) -> Optional[str]:
-        """
-        Tries to find an existing entity ID based on its name or description.
-        Starts with simple name matching, could be expanded with LLM coreference.
-        """
+        """ Tries to find entity ID by ID or case-insensitive name match. """
         if not description: return None
-        desc_lower = description.lower()
-
-        # Priority 1: Exact ID match
-        if description.startswith(ENTITY_ID_PREFIX) and description in self.state.entities:
-            return description
-
-        # Priority 2: Exact name match (case-insensitive)
-        # This assumes 'name' property exists consistently
+        desc_lower = description.lower().strip()
+        if description.startswith(ENTITY_ID_PREFIX) and description in self.state.entities: return description
         for entity_id, props in self.state.entities.items():
             name = props.get('name')
             if name and name.lower() == desc_lower:
-                 logger.debug(f"Resolved '{description}' to entity ID '{entity_id}' by name match.")
+                 logger.debug(f"Resolved '{description}' -> ID '{entity_id}' (Name Match).")
                  return entity_id
-
-        # Priority 3: Simple substring match in name (can be ambiguous)
-        # Use with caution or disable if too broad
-        # for entity_id, props in self.state.entities.items():
-        #      name = props.get('name')
-        #      if name and desc_lower in name.lower():
-        #           logger.debug(f"Resolved '{description}' to entity ID '{entity_id}' by substring match (potential ambiguity).")
-        #           return entity_id # Returns first match
-
-        # TODO: Add LLM-based coreference resolution for "the king", "him", etc. if needed.
-
-        logger.debug(f"Could not resolve entity description '{description}' to an existing entity ID.")
+        logger.debug(f"Could not resolve description '{description}' to existing entity ID.")
         return None
 
-    async def add_entity(self, description: str, type_hint: Optional[str] = None) -> Optional[str]:
-        """
-        Creates a new entity in the world state.
-        Generates default properties using the World LLM.
-        Returns the new entity ID if successful, None otherwise.
-        """
-        logger.info(f"Request to add new entity described as '{description}' (Hint: {type_hint}).")
-        # Generate a unique ID
-        new_id = self.state.generate_new_entity_id(ENTITY_ID_PREFIX)
+    # --- Direct State Access/Query ---
+    def get_entity_properties(self, entity_id_or_desc: str) -> Optional[dict[str, Any]]:
+         """Finds an entity by ID or description and returns its properties."""
+         entity_id = self._resolve_entity(entity_id_or_desc)
+         if entity_id: return self.state.get_entity(entity_id)
+         logger.debug(f"Entity '{entity_id_or_desc}' not found in world state.")
+         return None
 
-        # Ask World LLM to generate default properties
-        world_context = self.state.get_summary() # Provide context
-        default_properties = await self.llm.generate_entity_defaults(description, type_hint, world_context)
+    # --- World Query via LLM (Called by Agent Action) ---
+    async def query_world_via_llm(self, query_property: str, target_entity_desc: str) -> Optional[Any]:
+         """Uses the World Oracle LLM for potentially complex queries about entities."""
+         if not self.world_oracle_assistant_id: logger.error("No World Oracle Assistant ID set."); return None
+         if not await self.ensure_world_thread(): logger.error("Failed ensure World Oracle thread."); return None
 
-        if default_properties:
-            # Ensure essentials are present
-            default_properties.setdefault('name', description) # Use desc as name if not generated
-            default_properties.setdefault('type', type_hint or 'Thing')
-            # Add the entity to the state
-            self.state.add_or_update_entity(new_id, default_properties)
-            return new_id
-        else:
-            logger.error(f"Failed to generate default properties for new entity '{description}'. Cannot add.")
-            return None
+         target_entity_id = self._resolve_entity(target_entity_desc)
+         if not target_entity_id: return f"Entity description '{target_entity_desc}' not resolved."
 
-    async def query_entity_property(self, entity_id: str, property_name: str) -> Optional[Any]:
-        """Queries a specific property of a known entity."""
-        entity = self.state.get_entity(entity_id)
-        if not entity:
-            logger.warning(f"Query for non-existent entity ID: {entity_id}")
-            return None
+         world_context = self.state.get_summary(max_entities=30, max_len=1500) # Provide decent context
 
-        # Check if property exists locally first
-        if property_name in entity:
-            return entity[property_name]
-        else:
-             # If not found locally, maybe ask the World LLM based on general context?
-             # Could be useful for inferred properties, but risks inconsistency.
-             # For now, only return locally known properties.
-             logger.debug(f"Property '{property_name}' not found directly on entity '{entity_id}'.")
-             # Optional: Ask World LLM based on context (might be slow/costly)
-             # world_context = self.state.get_summary()
-             # llm_answer = await self.llm.query_entity_property(entity_id, property_name, world_context)
-             # return llm_answer
-             return None
+         # Use the generic JSON response method of the consolidated interface
+         # We need to generate the specific prompt for this task first
+         query_params = {
+             "entity_id": target_entity_id,
+             "property_name": query_property,
+             "world_state_context": world_context
+         }
+         task_description = f"world_query:{target_entity_id}.{query_property}"
+         try:
+             prompt = prompts.get_query_entity_property_prompt(**query_params)
+         except Exception as e:
+              logger.error(f"Failed to generate World Oracle prompt for {task_description}: {e}")
+              return None
 
+         parsed_response = await self.llm.generate_json_response(
+             assistant_id=self.world_oracle_assistant_id,
+             thread_id=self.world_oracle_thread_id, # Use world's thread
+             full_prompt=prompt,
+             task_description=task_description
+         )
 
-    async def propose_assertion(self, assertion: dict, proposing_agent_id: Optional[str] = None) -> bool:
-        """
-        Processes a proposed atomic assertion (existence, property, relationship).
-        Checks consistency and applies the change to the world state if valid.
-        Requires assertion dictionary to have descriptions replaced with resolved entity IDs
-        (e.g., 'entity_id' instead of 'entity_desc').
-        Returns True if the assertion was successfully applied, False otherwise.
-        """
-        logger.info(f"Agent '{proposing_agent_id}' proposes assertion: {assertion}")
-        assertion_type = assertion.get("type")
+         if parsed_response and "answer" in parsed_response:
+            answer = parsed_response["answer"]
+            if isinstance(answer, str) and "unknown based on provided context" in answer.lower(): return None
+            return answer
+         logger.warning(f"World LLM query failed valid JSON 'answer'. Task: {task_description}")
+         return None # Indicate query failed or returned unknown
 
-        # 1. Basic Validation
-        if not assertion_type:
-             logger.error("Proposed assertion is missing 'type'. Rejected.")
-             return False
+    # --- Basic State Updates (Called by Agent actions or setup) ---
+    def update_entity_property(self, entity_id_or_desc: str, property_name: str, property_value: Any):
+         """Directly updates a property for a resolved entity."""
+         entity_id = self._resolve_entity(entity_id_or_desc)
+         if entity_id: logger.info(f"Updating world state: {entity_id}.{property_name} = {property_value}"); self.state.add_or_update_entity(entity_id, {property_name: property_value})
+         else: logger.warning(f"Cannot update property '{property_name}': Entity '{entity_id_or_desc}' not resolved.")
 
-        # 2. Check Consistency with World State via LLM
-        world_context = self.state.get_summary()
-        consistency_status = await self.llm.check_assertion_consistency(assertion, world_context)
-
-        if consistency_status == "contradictory":
-            logger.warning(f"Proposed assertion {assertion} contradicts existing world state. Rejected.")
-            return False
-        elif consistency_status == "unknown":
-            # If LLM is unsure based on context, should we allow it?
-            # Let's be conservative: only apply if explicitly 'consistent'.
-            # Alternatively, could have different logic: allow 'unknown' for some types?
-            logger.warning(f"Proposed assertion {assertion} consistency is unknown based on context. Rejected.")
-            return False
-        elif consistency_status != "consistent":
-             logger.error(f"Unexpected consistency status '{consistency_status}' for assertion {assertion}. Rejected.")
-             return False
-
-        # 3. Apply Consistent Assertion to World State
-        logger.debug(f"Assertion {assertion} deemed consistent. Applying to world state.")
-        try:
-            if assertion_type == "existence":
-                # Existence check should ideally happen *before* proposing.
-                # If we reach here and it's consistent, it implies the entity *should* exist.
-                # Ensure it does, possibly by adding minimal data if needed (though creation should handle this)
-                entity_id = assertion.get('entity_id')
-                if entity_id and entity_id not in self.state.entities:
-                     logger.warning(f"Consistent 'existence' assertion proposed for '{entity_id}' which wasn't previously created. Adding minimal entry.")
-                     self.state.add_or_update_entity(entity_id, {"id": entity_id, "name": entity_id, "type": assertion.get("entity_type_hint","Thing")})
-                # No state change if entity already exists.
-            elif assertion_type == "property":
-                entity_id = assertion.get('entity_id')
-                prop_name = assertion.get('property')
-                prop_value = assertion.get('value') # Note: 'value_desc' should be resolved to ID if it's an entity link
-                if entity_id and prop_name is not None and prop_value is not None:
-                    self.state.add_or_update_entity(entity_id, {prop_name: prop_value}) # Use update method
-                else: raise ValueError("Missing required fields for property assertion.")
-            elif assertion_type == "relationship":
-                subj_id = assertion.get('subject_id')
-                verb = assertion.get('verb')
-                obj_id = assertion.get('object_id')
-                if subj_id and verb and obj_id:
-                     # Simple relationship storage for now
-                     self.state.add_relationship(subj_id, verb, obj_id)
-                     # Could also update properties, e.g. subject.knows = [..., obj_id]
-                else: raise ValueError("Missing required fields for relationship assertion.")
-            else:
-                raise ValueError(f"Unknown assertion type: {assertion_type}")
-
-            logger.info(f"Successfully applied assertion: {assertion}")
-            return True
-
-        except Exception as e:
-             logger.error(f"Error applying consistent assertion {assertion}: {e}", exc_info=True)
-             return False
-
-    # --- World State Accessors/Mutators (Simplified examples) ---
-    def get_agent_location_id(self, agent_entity_id: str) -> Optional[str]:
-        """Gets the registered location ID of an agent entity."""
-        agent_props = self.state.get_entity(agent_entity_id)
-        return agent_props.get('location_id') if agent_props else None
-
-    def update_entity_location(self, entity_id: str, new_location_id: Optional[str]):
+    def update_entity_location(self, entity_id: str, new_location_id_or_desc: Optional[str]):
          """Updates the entity's location property and location lists."""
-         logger.info(f"World state update: Entity '{entity_id}' location changed to '{new_location_id}'.")
-         # This uses the logic already built into add_or_update_entity
-         self.state.add_or_update_entity(entity_id, {'location_id': new_location_id})
-
+         new_loc_id : Optional[str] = None
+         if new_location_id_or_desc: new_loc_id = self._resolve_entity(new_location_id_or_desc)
+         if new_location_id_or_desc and (not new_loc_id or new_loc_id not in self.state.locations): logger.warning(f"Invalid target location '{new_location_id_or_desc}' for entity '{entity_id}'."); return
+         logger.info(f"World update: Entity '{entity_id}' location -> '{new_loc_id}' ('{new_location_id_or_desc}').")
+         self.state.add_or_update_entity(entity_id, {'location_id': new_loc_id})
 
     # --- Persistence ---
-    def save_state(self, file_path: str) -> bool:
-        """Saves the current world state to YAML."""
-        state_dict = self.state.to_dict()
-        logger.info(f"Saving world state to {file_path}")
-        return save_agent_state_to_yaml(state_dict, file_path) # Reusing agent saver
-
+    def save_state(self, file_path: str) -> bool: # ... same ...
+         try: state_dict = self.state.to_dict(); logger.info(f"Saving world state to {file_path}"); return save_agent_state_to_yaml(state_dict, file_path)
+         except Exception as e: logger.error(f"Error saving world state: {e}", exc_info=True); return False
     @classmethod
-    def load_state(cls, file_path: str, world_llm_interface: WorldLLMInterface) -> Optional['World']:
-        """Loads world state from YAML and creates a World instance."""
-        logger.info(f"Attempting to load world state from: {file_path}")
-        state_dict = load_agent_config_from_yaml(file_path) # Reusing agent loader
-        if state_dict:
-            world_state = WorldState.from_dict(state_dict)
-            return cls(world_state, world_llm_interface)
-        else:
-             # Error logged by load_agent_config_from_yaml
-             return None
+    def load_state(cls, file_path: str, llm_interface: LLM_API_Interface, world_oracle_assistant_id: Optional[str]) -> Optional['World']: # Updated signature
+         logger.info(f"Attempting load world state: {file_path}")
+         state_dict = load_agent_config_from_yaml(file_path)
+         if state_dict:
+             try: world_state = WorldState.from_dict(state_dict); logger.info("World state loaded."); return cls(world_state, llm_interface, world_oracle_assistant_id)
+             except Exception as e: logger.error(f"Failed instantiate WorldState from {file_path}: {e}", exc_info=True); return None
+         else: logger.warning(f"YAML load failed from {file_path}."); return None

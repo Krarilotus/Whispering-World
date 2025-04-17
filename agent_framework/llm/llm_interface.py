@@ -1,242 +1,179 @@
 # agent_framework/llm/llm_interface.py
 import json
 import logging
-from typing import Optional, Dict, Any, List, Tuple, Union, TYPE_CHECKING # Use modern types if preferred
+import asyncio
+from typing import Optional, Dict, Any
 
-# Import AgentManager from adjusted path
+# Import AgentManager and prompts correctly using relative paths
 import sys
 import os
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..', '..'))
 if project_root not in sys.path: sys.path.append(project_root)
-
-from ..api.agent_api import AgentManager, DEFAULT_MODEL, DEFAULT_DM_MODEL
-# Import prompt functions from prompts module
-from . import prompts
-
-if TYPE_CHECKING: from ..core.agent import Agent
+from agent_framework.api.agent_api import AgentManager # Correct relative import
+from agent_framework.llm import prompts # Correct relative import
+import openai # For RateLimitError
 
 logger = logging.getLogger(__name__)
 
-class LLMInterface:
-    """Handles interaction with the Agent's LLM via AgentManager using function-based prompts."""
-    def __init__(self, agent_manager: AgentManager, agent_ref: 'Agent'):
+class LLM_API_Interface:
+    """ Consolidated interface for OpenAI Assistant API calls with retries and parsing. """
+    def __init__(self, agent_manager: AgentManager):
         self.manager = agent_manager
-        self.agent = agent_ref
-
-    # --- Helper Methods ---
-    def _get_agent_api_details(self) -> Optional[tuple[str, str]]:
-         """Safely gets assistant_id and thread_id from the agent."""
-         if not self.agent.assistant_id or not self.agent.thread_id:
-             logger.error(f"Agent {self.agent.name} assistant_id or thread_id is not set in LLMInterface.")
-             return None
-         return self.agent.assistant_id, self.agent.thread_id
+        logger.info("LLM_API_Interface initialized.")
 
     def _parse_json_response(self, response_text: Optional[str], task_description: str) -> Optional[dict[str, Any]]:
-        """Attempts to parse JSON from the LLM response."""
+        """Attempts to parse JSON from the LLM response, with basic cleaning."""
         if not response_text:
-            logger.error(f"Received empty response for Agent task: {task_description}")
+            logger.error(f"Received empty response for task: {task_description}")
             return None
         try:
-            # Basic cleaning for potential markdown ```json ... ``` blocks or leading/trailing text
+            # Basic cleaning for ```json ... ``` blocks or text outside {}
             response_text = response_text.strip()
             json_start = response_text.find('{')
             json_end = response_text.rfind('}')
             if json_start != -1 and json_end != -1 and json_end > json_start:
                  response_text = response_text[json_start:json_end+1]
-            else:
-                 logger.warning(f"Could not reliably find JSON object markers {{}} in response for {task_description}. Raw: {response_text[:200]}...")
-                 # Attempt parsing anyway, might work if it's just missing backticks
-                 # return None # Stricter approach
+            elif response_text: # Warn if non-empty but no braces
+                 logger.warning(f"No JSON object markers {{}} in response for {task_description}. Attempting parse. Raw: {response_text[:200]}...")
+            else: # Empty after strip
+                 logger.error(f"Empty response after stripping for {task_description}"); return None
 
             parsed_json = json.loads(response_text.strip())
             if not isinstance(parsed_json, dict):
-                 logger.error(f"Parsed JSON is not a dictionary for Agent task '{task_description}'. Type: {type(parsed_json)}. Response: {response_text[:200]}")
-                 return None
+                 logger.error(f"Parsed JSON is not a dictionary for '{task_description}'. Type: {type(parsed_json)}. Resp: {response_text[:200]}"); return None
             return parsed_json
         except json.JSONDecodeError:
-            logger.error(f"Failed to parse JSON response for Agent task '{task_description}'. Response: {response_text[:500]}")
-            return None
+            logger.error(f"Failed parse JSON for '{task_description}'. Resp: {response_text[:500]}"); return None
         except Exception as e:
-            logger.error(f"Unexpected error parsing JSON for Agent task '{task_description}': {e}. Response: {response_text[:500]}")
-            return None
+            logger.error(f"Unexpected JSON parsing error for '{task_description}': {e}. Resp: {response_text[:500]}"); return None
 
-    async def _run_llm_non_streaming(self, prompt: str, timeout: int = 120) -> Optional[str]:
-         """Runs a non-streaming call to the Agent's LLM."""
-         api_details = self._get_agent_api_details()
-         if not api_details: return None
-         assistant_id, thread_id = api_details
+    async def _run_assistant_non_streaming(
+        self,
+        assistant_id: str,
+        thread_id: str,
+        # user_message: Optional[str], # <<< REMOVED - message added externally now
+        additional_instructions: Optional[str], # <<< ADDED - This holds the dynamic prompt
+        task_description: str, # For logging
+        timeout: int = 90,
+        max_retries: int = 1,
+        retry_delay_base: float = 2.0
+        ) -> Optional[str]:
+         """
+         Core function to run assistant non-streamingly, handling polling and retries.
+         Assumes the relevant USER message was already added to the thread externally.
+         Uses 'additional_instructions' for dynamic, turn-specific context/tasks.
+         Returns the raw text response from the assistant's message.
+         """
+         if not assistant_id or not thread_id:
+             logger.error(f"Missing assistant_id ('{assistant_id}') or thread_id ('{thread_id}') for task '{task_description}'."); return None
 
-         msg_id = await self.manager.add_message_to_thread(thread_id, prompt, role="user")
-         if not msg_id:
-             logger.error(f"Agent {self.agent.name}: Failed to add prompt message to thread {thread_id}.")
-             return None
+         # --- Message addition is now handled *before* calling this function ---
+         # logger.debug(f"Adding prompt message to thread {thread_id} for task '{task_description}'")
+         # msg_id = await self.manager.add_message_to_thread(thread_id, prompt, role="user") # NO LONGER DONE HERE
+         # if not msg_id: logger.error(f"Failed add prompt msg to thread {thread_id} for task '{task_description}'."); return None
 
-         logger.debug(f"Agent {self.agent.name}: Requesting non-streaming run on thread {thread_id}...")
-         run_result = await self.manager.run_agent_on_thread_non_streaming(
-             assistant_id=assistant_id, thread_id=thread_id, timeout_seconds=timeout)
+         for attempt in range(max_retries + 1):
+             run_result = None
+             try:
+                 if attempt > 0: logger.info(f"Retrying LLM call for '{task_description}' (Attempt {attempt+1}/{max_retries+1})")
+                 logger.debug(f"Requesting run for {assistant_id} on thread {thread_id} (Attempt {attempt+1})...")
 
-         if not run_result:
-             logger.error(f"Agent {self.agent.name}: Run failed or returned no result on thread {thread_id}.")
-             return None
-         run_id = run_result.get("id")
-         status = run_result.get("status")
+                 # --- *** Pass additional_instructions correctly *** ---
+                 run_result = await self.manager.run_agent_on_thread_non_streaming(
+                     assistant_id=assistant_id,
+                     thread_id=thread_id,
+                     additional_instructions=additional_instructions, # Pass dynamic context/task here
+                     timeout_seconds=timeout
+                 )
+                 # ------------------------------------------------------
 
-         if status == "completed":
-             logger.debug(f"Agent {self.agent.name}: Run {run_id} completed. Retrieving message...")
-             messages = await self.manager.get_thread_messages(thread_id, limit=1, order="desc")
-             if messages and messages[0].get("role") == "assistant" and messages[0].get("run_id") == run_id:
-                 content_list = messages[0].get("content", [])
-                 resp = "".join(c.get("text", {}).get("value", "") for c in content_list if c.get("type") == "text").strip()
-                 logger.debug(f"Agent LLM Raw Response ({run_id}): {resp[:200]}...")
-                 return resp
-             else:
-                 logger.error(f"Agent {self.agent.name}: Run {run_id} completed, but failed retrieve message from thread {thread_id}.")
-                 return None
-         elif status == "requires_action":
-             logger.warning(f"Agent {self.agent.name}: Run {run_id} requires action (tool use), which is not handled in this interface.")
-             # TODO: Implement tool handling if needed
-             return None
-         elif status == "timed_out":
-             logger.error(f"Agent {self.agent.name}: Run {run_id} timed out on thread {thread_id}.")
-             return None
-         else:
-             logger.error(f"Agent {self.agent.name}: Run {run_id} ended with unhandled status: {status}. Error: {run_result.get('last_error')}")
-             return None
+                 if not run_result:
+                     logger.error(f"LLM run initiation failed for '{task_description}' (Attempt {attempt+1})."); # Simplified error
+                     if attempt < max_retries: await asyncio.sleep(retry_delay_base * (2 ** attempt)); continue
+                     else: return None
 
-    # --- Core Agent Interaction Methods ---
+                 run_id = run_result.get("id", "N/A"); status = run_result.get("status")
+                 logger.debug(f"Run {run_id} for '{task_description}' status: {status}")
 
-    def _construct_base_prompt(self) -> str:
-        """Constructs the common context part using the prompt function."""
-        # Call the prompt function from prompts.py
-        prompt = prompts.get_base_context_prompt(
-            agent_name=self.agent.name,
-            agent_description=self.agent.description,
-            personality_description=self.agent.personality.get_description(),
-            motivation_description=self.agent.motivation.get_state_description(),
-            current_state_description=self.agent.current_state.get_state_description(),
-            memory_summary=self.agent.memory.get_memory_summary(max_memories=15, max_length=1000) # Limit summary length
-        )
-        return prompt
+                 if status == "completed":
+                     logger.debug(f"Run {run_id} completed. Retrieving message...")
+                     messages = await self.manager.get_thread_messages(thread_id, limit=1, order="desc")
+                     if messages and messages[0].get("role") == "assistant" and messages[0].get("run_id") == run_id:
+                         content_list = messages[0].get("content", [])
+                         resp = "".join(c.get("text", {}).get("value", "") for c in content_list if c.get("type") == "text").strip()
+                         logger.debug(f"LLM Raw Response ({run_id} for {task_description}): {resp[:200]}...")
+                         return resp # SUCCESS
+                     else: logger.error(f"Run {run_id} completed for '{task_description}', but failed retrieve msg from thread {thread_id}."); return None
 
-    async def generate_agent_response(self, user_input: str, verification_context: str) -> Optional[dict[str, Any]]:
-        """Generates the agent's main response to user input using JSON format."""
-        base_prompt = self._construct_base_prompt()
-        # Call the prompt function
-        task_prompt = prompts.get_react_to_input_prompt(
-             user_input=user_input,
-             verification_context=verification_context # Pass the detailed verification results
-        )
-        # Combine base context with task-specific instructions
-        full_prompt = f"{base_prompt}\n{task_prompt}"
+                 elif status == "failed":
+                      last_error = run_result.get('last_error', {}); code = last_error.get('code'); msg = last_error.get('message', '')
+                      logger.error(f"Run {run_id} FAILED for '{task_description}'. Code: {code}, Msg: {msg}")
+                      if code == 'rate_limit_exceeded':
+                           if attempt < max_retries:
+                                wait = retry_delay_base
+                                try: wait = float(msg.split('try again in ')[1].split('s.')[0]) + 0.5
+                                except: wait = retry_delay_base * (2 ** attempt) # Exponential backoff if parse fails
+                                logger.warning(f"Rate limit hit for '{task_description}'. Retrying in {wait:.1f}s..."); await asyncio.sleep(wait); continue
+                           else: logger.error(f"Rate limit for '{task_description}', max retries reached."); return None
+                      else: return None # Other failure, don't retry
+                 elif status in ["expired", "cancelled", "requires_action"]: # Requires_action not handled
+                     logger.error(f"Run {run_id} for '{task_description}' ended status: {status}."); return None
+                 else: # Should include queued, in_progress if polling failed (unlikely with current agent_api logic)
+                     logger.error(f"Run {run_id} for '{task_description}' unexpected status: {status}"); # Simplified error
+                     if attempt < max_retries: await asyncio.sleep(retry_delay_base * (2 ** attempt)); continue
+                     else: return None
+             except openai.RateLimitError as e:
+                 if attempt < max_retries:
+                     wait = retry_delay_base * (2 ** attempt) # Add check for retry-after header if available
+                     logger.warning(f"OpenAI RateLimitError hit during API call for '{task_description}'. Retrying in {wait:.1f}s..."); await asyncio.sleep(wait); continue
+                 else: logger.error(f"OpenAI RateLimitError for '{task_description}', max retries reached: {e}"); return None
+             except Exception as e: logger.error(f"Unexpected error during LLM run for '{task_description}': {e}", exc_info=True); return None # Don't retry others
 
-        logger.debug(f"--- Generating Agent Response --- \nPrompt Start (truncated):\n{full_prompt[:1000]}...\n--- End Prompt Start ---")
+         logger.error(f"LLM call failed after {max_retries + 1} attempts for '{task_description}'."); return None
 
-        raw_response = await self._run_llm_non_streaming(full_prompt, timeout=150) # Longer timeout for complex response
-        return self._parse_json_response(raw_response, "generate_agent_response")
+    # --- Specific Use Case Methods ---
 
-    # --- Verification Support Methods ---
+    async def generate_json_response(
+        self,
+        assistant_id: str,
+        thread_id: str,
+        # REMOVED: user_message: str, # This is added externally now
+        additional_instructions: str, # This is the dynamic prompt part
+        task_description: str = "generate_json_response",
+        timeout: int = 90
+        ) -> Optional[dict[str, Any]]:
+         """
+         Runs an assistant non-streamingly. Assumes USER message added externally.
+         Uses 'additional_instructions' for dynamic prompt. Parses JSON response.
+         """
+         raw_response = await self._run_assistant_non_streaming(
+              assistant_id=assistant_id,
+              thread_id=thread_id,
+              # user_message=None, # Not passed here
+              additional_instructions=additional_instructions, # Pass dynamic prompt here
+              task_description=task_description,
+              timeout=timeout
+            )
+         return self._parse_json_response(raw_response, task_description)
 
-    async def extract_atomic_assertions(self, user_input: str) -> Optional[list[dict[str, Any]]]:
-        """Uses LLM to extract atomic assertions from user input."""
-        # Call the prompt function
-        prompt = prompts.get_extract_atomic_assertions_prompt(user_input)
-
-        logger.debug(f"--- Extracting Atomic Assertions --- \nInput: {user_input}")
-        raw_response = await self._run_llm_non_streaming(prompt, timeout=90) # Increase timeout
-        parsed_json = self._parse_json_response(raw_response, "extract_atomic_assertions")
-
-        if parsed_json and isinstance(parsed_json.get("assertions"), list):
-            # Basic validation: Ensure items in the list are dictionaries
-            validated_assertions = [a for a in parsed_json["assertions"] if isinstance(a, dict)]
-            if len(validated_assertions) != len(parsed_json["assertions"]):
-                 logger.warning(f"Some items in extracted 'assertions' were not dictionaries. Raw: {raw_response}")
-
-            if not validated_assertions and user_input: # If LLM returns empty list for non-empty input
-                 logger.info(f"LLM extracted no assertions for input: '{user_input[:100]}...'")
-            elif validated_assertions:
-                 logger.info(f"Extracted {len(validated_assertions)} atomic assertions.")
-                 logger.debug(f"Extracted Assertions: {json.dumps(validated_assertions, indent=2)}")
-            return validated_assertions # Return list (can be empty)
-        else:
-            # Log error if parsing failed or 'assertions' key is missing/not a list
-            logger.error(f"Assertion extraction failed to produce valid JSON list 'assertions'. Raw: {raw_response}")
-            return None # Indicate failure to extract
-
-    async def check_claim_plausibility(self, claim_or_assertion: Union[str, dict], assessment_target: str = "agent") -> Optional[Tuple[bool, str]]:
-        """Uses LLM to check if a claim/assertion is plausible for the agent or the world."""
-        # Format claim/assertion for context search and prompt display
-        if isinstance(claim_or_assertion, dict):
-            assertion_summary = f"Assertion({json.dumps(claim_or_assertion)})"
-            claim_for_context_search = claim_or_assertion.get("entity_desc") or claim_or_assertion.get("subject_desc") or assertion_summary
-        else:
-            assertion_summary = claim_for_context_search = claim_or_assertion
-
-        # Retrieve relevant memories
-        relevant_memories = self.agent.memory.retrieve_relevant_memories(query_text=claim_for_context_search, top_k=5)
-        mem_summary = "\n".join([f"- {mem}" for mem in relevant_memories]) if relevant_memories else "No specifically relevant memories found."
-
-        # Get world context summary
-        world_summary = self.agent.world.state.get_summary(max_entities=10, max_rels=5, max_len=600) if self.agent.world else "N/A"
-        relevant_context = f"Relevant Agent Memories:\n{mem_summary}\n\nRelevant World State Snapshot:\n{world_summary}"
-
-        # Determine prompt context details
-        if assessment_target == "agent":
-            plausibility_context = "for you personally (your history, beliefs, internal state)"
-            reasoning_focus = "based on your persona and memories"
-            personality_desc = self.agent.personality.get_description()
-        elif assessment_target == "world":
-             plausibility_context = "within the objective reality of the simulated world"
-             reasoning_focus = "based on general world knowledge and context provided"
-             personality_desc = "N/A (Assessing objective world)"
-        else:
-             logger.error(f"Invalid assessment_target '{assessment_target}' for plausibility check.")
-             return None
-
-        # Call the prompt function
-        prompt = prompts.get_check_plausibility_prompt(
-            agent_name=self.agent.name, agent_description=self.agent.description,
-            assessment_target=assessment_target, plausibility_context=plausibility_context,
-            reasoning_focus=reasoning_focus, personality_description=personality_desc,
-            relevant_context=relevant_context, claim_or_assertion=assertion_summary
-        )
-
-        logger.debug(f"--- Checking Plausibility ({assessment_target}) for '{assertion_summary[:100]}' ---")
-
-        # Make the LLM call
-        raw_response = await self._run_llm_non_streaming(prompt, timeout=75)
-        parsed_json = self._parse_json_response(raw_response, f"check_claim_plausibility ({assessment_target})")
-
-        # Process the response
-        if parsed_json and isinstance(parsed_json.get("is_plausible"), bool) and isinstance(parsed_json.get("reasoning"), str):
-            logger.info(f"Plausibility Check Result: Plausible={parsed_json['is_plausible']}, Reason='{parsed_json['reasoning'][:100]}...'")
-            return parsed_json["is_plausible"], parsed_json["reasoning"]
-        else:
-            logger.error(f"Plausibility check ({assessment_target}) failed valid JSON. Raw: {raw_response}")
-            return False, f"LLM response for plausibility check ({assessment_target}) was invalid or malformed."
-
-    async def generate_synthetic_memory(self, assertion: dict) -> Optional[str]:
-         """Uses LLM to generate a synthetic AGENT memory for a plausible internal assertion."""
-         assertion_summary = f"Assertion({json.dumps(assertion)})"
-         # Call the prompt function
-         prompt = prompts.get_generate_synthetic_memory_prompt(
-              agent_name=self.agent.name, agent_description=self.agent.description,
-              personality_description=self.agent.personality.get_description(),
-              assertion_summary=assertion_summary
-         )
-         logger.debug(f"--- Generating Synthetic Agent Memory for '{assertion_summary}' ---")
-         raw_response = await self._run_llm_non_streaming(prompt, timeout=90)
-         parsed_json = self._parse_json_response(raw_response, "generate_synthetic_agent_memory")
-         if parsed_json and isinstance(parsed_json.get("synthetic_memory"), str):
-             generated_mem = parsed_json["synthetic_memory"]
-             logger.info(f"Generated synthetic memory: {generated_mem[:100]}...")
-             return generated_mem
-         else:
-             logger.error(f"Synthetic memory gen failed valid JSON 'synthetic_memory'. Raw: {raw_response}")
-             return None
-
-    # Optional: Keep generate_simple_response if needed for other tasks like reflection summaries
-    async def generate_simple_response(self, prompt: str) -> Optional[str]:
-         """Generates a simple text response without enforcing JSON structure."""
-         logger.debug(f"--- Generating Simple Response --- \nPrompt Start:\n{prompt[:500]}...")
-         return await self._run_llm_non_streaming(prompt, timeout=90)
+    # (generate_simple_response could be updated similarly if needed)
+    async def generate_simple_response(
+        self,
+        assistant_id: str,
+        thread_id: str,
+        # REMOVED: user_message: str,
+        additional_instructions: str,
+        task_description: str = "generate_simple_response",
+        timeout: int = 90
+        )-> Optional[str]:
+         """Runs an assistant non-streamingly. Assumes USER message added externally. Returns raw text."""
+         logger.debug(f"--- Generating Simple Response ({task_description}) ---")
+         return await self._run_assistant_non_streaming(
+             assistant_id=assistant_id,
+             thread_id=thread_id,
+             # user_message=None,
+             additional_instructions=additional_instructions,
+             task_description=task_description,
+             timeout=timeout
+            )
